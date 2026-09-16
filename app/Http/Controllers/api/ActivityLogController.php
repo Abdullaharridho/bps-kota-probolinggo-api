@@ -31,6 +31,7 @@ class ActivityLogController extends Controller
                 Rule::in([
                     'app_open',
                     'screen_view',
+                    'app_close',
                 ]),
             ],
 
@@ -166,50 +167,144 @@ class ActivityLogController extends Controller
      * Endpoint ini dapat memberikan informasi statistik
      * yang lebih lengkap dibanding endpoint public.
      */
-    public function adminStatistics(Request $request)
-    {
-        $validated = $request->validate([
-            'start_date' => [
-                'nullable',
-                'date',
-            ],
+   public function adminStatistics(Request $request)
+{
+    $validated = $request->validate([
+        'start_date' => ['nullable', 'date'],
+        'end_date' => ['nullable', 'date', 'after_or_equal:start_date'],
+    ]);
 
-            'end_date' => [
-                'nullable',
-                'date',
-                'after_or_equal:start_date',
-            ],
+    $startDate = $validated['start_date']
+        ?? now()->startOfMonth()->toDateString();
+
+    $endDate = $validated['end_date']
+        ?? now()->toDateString();
+
+    $query = ActivityLog::query()
+        ->whereBetween('created_at', [
+            $startDate . ' 00:00:00',
+            $endDate . ' 23:59:59',
         ]);
 
-        $startDate = $validated['start_date']
-            ?? now()->startOfMonth()->toDateString();
+    /*
+    |--------------------------------------------------------------------------
+    | TOTAL PENGGUNA
+    |--------------------------------------------------------------------------
+    */
 
-        $endDate = $validated['end_date']
-            ?? now()->toDateString();
-
-        $query = ActivityLog::query()
-            ->whereBetween('created_at', [
-                $startDate . ' 00:00:00',
-                $endDate . ' 23:59:59',
-            ]);
-
-        /*
-         * Jumlah anonymous_id unik.
-         */
-        $uniqueUsers = (clone $query)
+    $uniqueUsers =
+        (clone $query)
             ->distinct('anonymous_id')
             ->count('anonymous_id');
 
-        /*
-         * Total seluruh aktivitas.
-         */
-        $totalAccess = (clone $query)
+    /*
+    |--------------------------------------------------------------------------
+    | TOTAL AKSES
+    |--------------------------------------------------------------------------
+    */
+
+    $totalAccess =
+        (clone $query)
             ->count();
 
+    /*
+    |--------------------------------------------------------------------------
+    | TOTAL DURASI
+    |--------------------------------------------------------------------------
+    |
+    | Menghitung pasangan:
+    |
+    | app_open -> app_close
+    |
+    | berdasarkan anonymous_id.
+    |
+    */
+
+    $activitySessions =
+        (clone $query)
+            ->whereIn('event', [
+                'app_open',
+                'app_close',
+            ])
+            ->select([
+                'anonymous_id',
+                'event',
+                'created_at',
+            ])
+            ->orderBy('anonymous_id')
+            ->orderBy('created_at')
+            ->get();
+
+    $totalDurationSeconds = 0;
+
+    $openSessions = [];
+
+    foreach ($activitySessions as $activity) {
+
+        $anonymousId =
+            $activity->anonymous_id;
+
         /*
-         * Statistik event.
+         * Ketika app_open ditemukan,
+         * simpan waktunya.
          */
-        $eventStatistics = (clone $query)
+        if ($activity->event === 'app_open') {
+
+            $openSessions[$anonymousId] =
+                $activity->created_at;
+
+            continue;
+        }
+
+        /*
+         * Ketika app_close ditemukan,
+         * cari app_open sebelumnya
+         * dari anonymous_id yang sama.
+         */
+        if (
+            $activity->event === 'app_close' &&
+            isset($openSessions[$anonymousId])
+        ) {
+
+            $openTime =
+                $openSessions[$anonymousId];
+
+            $closeTime =
+                $activity->created_at;
+
+            $duration =
+                $openTime->diffInSeconds(
+                    $closeTime
+                );
+
+            /*
+             * Hindari durasi negatif
+             * jika data timestamp bermasalah.
+             */
+            if ($duration > 0) {
+
+                $totalDurationSeconds +=
+                    $duration;
+            }
+
+            /*
+             * Session sudah selesai,
+             * hapus app_open yang sudah dipasangkan.
+             */
+            unset(
+                $openSessions[$anonymousId]
+            );
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | STATISTIK EVENT
+    |--------------------------------------------------------------------------
+    */
+
+    $eventStatistics =
+        (clone $query)
             ->select(
                 'event',
                 DB::raw('COUNT(*) as total')
@@ -218,10 +313,14 @@ class ActivityLogController extends Controller
             ->orderByDesc('total')
             ->get();
 
-        /*
-         * Statistik screen.
-         */
-        $screenStatistics = (clone $query)
+    /*
+    |--------------------------------------------------------------------------
+    | STATISTIK SCREEN
+    |--------------------------------------------------------------------------
+    */
+
+    $screenStatistics =
+        (clone $query)
             ->whereNotNull('screen')
             ->select(
                 'screen',
@@ -231,52 +330,82 @@ class ActivityLogController extends Controller
             ->orderByDesc('total')
             ->get();
 
-        /*
-         * Statistik perangkat.
-         *
-         * Yang dihitung adalah anonymous_id unik
-         * pada setiap tipe perangkat.
-         */
-        $deviceStatistics = (clone $query)
+    /*
+    |--------------------------------------------------------------------------
+    | STATISTIK DEVICE
+    |--------------------------------------------------------------------------
+    */
+
+    $deviceStatistics =
+        (clone $query)
             ->whereNotNull('device_model')
             ->select(
                 'device_model',
-                DB::raw('COUNT(DISTINCT anonymous_id) as total_users')
+                DB::raw(
+                    'COUNT(DISTINCT anonymous_id) as total_users'
+                )
             )
             ->groupBy('device_model')
             ->orderByDesc('total_users')
             ->get();
 
-        /*
-         * Statistik versi Android.
-         */
-        $androidStatistics = (clone $query)
+    /*
+    |--------------------------------------------------------------------------
+    | STATISTIK ANDROID
+    |--------------------------------------------------------------------------
+    */
+
+    $androidStatistics =
+        (clone $query)
             ->whereNotNull('android_version')
             ->select(
                 'android_version',
-                DB::raw('COUNT(DISTINCT anonymous_id) as total_users')
+                DB::raw(
+                    'COUNT(DISTINCT anonymous_id) as total_users'
+                )
             )
             ->groupBy('android_version')
             ->orderByDesc('total_users')
             ->get();
 
-        return response()->json([
-            'success' => true,
+    /*
+    |--------------------------------------------------------------------------
+    | RESPONSE
+    |--------------------------------------------------------------------------
+    */
 
-            'period' => [
-                'start_date' => $startDate,
-                'end_date' => $endDate,
-            ],
+    return response()->json([
+        'success' => true,
 
-            'summary' => [
-                'users_accessing' => $uniqueUsers,
-                'total_access' => $totalAccess,
-            ],
+        'period' => [
+            'start_date' => $startDate,
+            'end_date' => $endDate,
+        ],
 
-            'events' => $eventStatistics,
-            'screens' => $screenStatistics,
-            'devices' => $deviceStatistics,
-            'android_versions' => $androidStatistics,
-        ]);
-    }
+        'summary' => [
+            'users_accessing' => $uniqueUsers,
+            'total_access' => $totalAccess,
+
+            /*
+             * Durasi dalam detik.
+             * Android akan mengubahnya menjadi
+             * menit/jam untuk ditampilkan.
+             */
+            'total_duration_seconds' =>
+                $totalDurationSeconds,
+        ],
+
+        'events' =>
+            $eventStatistics,
+
+        'screens' =>
+            $screenStatistics,
+
+        'devices' =>
+            $deviceStatistics,
+
+        'android_versions' =>
+            $androidStatistics,
+    ]);
+}
 }
