@@ -24,8 +24,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/profile/password', [AuthController::class, 'updatePassword']);
      Route::post('/biometric/register', [AuthController::class, 'biometricRegister']);
 
-    Route::apiResource('surat-masuk', SuratMasukController::class)->except(['update', 'destroy']);
-
     Route::middleware('super_admin')->group(function () {
 
         Route::get('/users', [SuperAdminController::class, 'index']);
@@ -42,5 +40,13 @@ Route::middleware('auth:sanctum')->group(function () {
             ActivityLogController::class,
             'adminStatistics',
         ]);
+
+        //Surat Masuk Routes
+        Route::get('/surat-masuk', [SuratMasukController::class, 'index']);
+        Route::post('/surat-masuk', [SuratMasukController::class, 'store']);
+        Route::get('/surat-masuk/{id}', [SuratMasukController::class, 'show']);
+        Route::post('/surat-masuk/{id}', [SuratMasukController::class, 'update']);
+        Route::patch('/surat-masuk/{id}/status', [SuratMasukController::class, 'updateStatus']);
+        Route::delete('/surat-masuk/{id}', [SuratMasukController::class, 'destroy']);
     });
 });

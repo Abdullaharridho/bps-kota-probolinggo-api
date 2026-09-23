@@ -8,10 +8,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class SuperAdminMiddleware
 {
-    public function handle(
-        Request $request,
-        Closure $next
-    ): Response {
+    public function handle(Request $request, Closure $next, ...$roles): Response
+    {
         $user = $request->user();
 
         if (!$user) {
@@ -21,10 +19,10 @@ class SuperAdminMiddleware
             ], 401);
         }
 
-        if ($user->role !== 'super_admin') {
+        if (!in_array($user->role, $roles)) {
             return response()->json([
                 'success' => false,
-                'message' => 'Akses hanya untuk Super Admin.',
+                'message' => 'Akses ditolak. Anda tidak memiliki izin untuk fitur ini.',
             ], 403);
         }
 
