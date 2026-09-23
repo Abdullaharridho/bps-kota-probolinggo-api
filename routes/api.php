@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\SuperAdminController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\SuratMasukController;
 
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/biometric/login', [AuthController::class, 'biometricLogin']);
@@ -16,13 +17,14 @@ Route::get('/activity-statistics', [
 Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/user', [AuthController::class, 'user']);
-    
 
     Route::post('/logout', [AuthController::class, 'logout']);
      Route::put('/profile', [AuthController::class, 'updateProfile']);
 
     Route::put('/profile/password', [AuthController::class, 'updatePassword']);
      Route::post('/biometric/register', [AuthController::class, 'biometricRegister']);
+
+    Route::apiResource('surat-masuk', SuratMasukController::class)->except(['update', 'destroy']);
 
     Route::middleware('super_admin')->group(function () {
 
