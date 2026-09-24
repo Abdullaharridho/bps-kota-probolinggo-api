@@ -8,15 +8,12 @@ use App\Http\Resources\SuratMasukResource;
 use App\Models\SuratMasuk;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
 
 class SuratMasukController extends Controller
 {
-    /**
-     * Mendapatkan Daftar Surat Masuk (Dengan Pencarian & Filter Status)
-     */
-    public function index(Request $request): AnonymousResourceCollection
+    public function index(Request $request): JsonResponse
     {
         $query = SuratMasuk::with('dicatatOleh');
 
@@ -32,12 +29,13 @@ class SuratMasukController extends Controller
             $query->where('status', $request->status);
         }
 
-        return SuratMasukResource::collection($query->latest()->get());
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Daftar surat masuk berhasil diambil.',
+            'data' => SuratMasukResource::collection($query->latest()->get())
+        ]);
     }
 
-    /**
-     * Tambah Surat Masuk
-     */
     public function store(StoreSuratMasukRequest $request): JsonResponse
     {
         $validated = $request->validated();
@@ -45,8 +43,7 @@ class SuratMasukController extends Controller
         $validated['status'] = $request->status ?? 'baru';
 
         if ($request->hasFile('file_surat')) {
-            $path = $request->file('file_surat')->store('surat_masuk', 'public');
-            $validated['file_surat'] = $path;
+            $validated['file_surat'] = $request->file('file_surat')->store('surat_masuk', 'public');
         }
 
         $suratMasuk = SuratMasuk::create($validated);
@@ -59,15 +56,13 @@ class SuratMasukController extends Controller
         ], 201);
     }
 
-    /**
-     * Melihat Detail Surat Masuk
-     */
+
     public function show(string $id): JsonResponse
     {
         $suratMasuk = SuratMasuk::with('dicatatOleh')->find($id);
 
         if (!$suratMasuk) {
-            return response()->json(['status' => 'error', 'message' => 'Data surat masuk tidak ditemukan.'], 404);
+            return response()->json(['status' => 'error', 'message' => 'Data tidak ditemukan.'], 404);
         }
 
         return response()->json([
@@ -77,9 +72,6 @@ class SuratMasukController extends Controller
         ], 200);
     }
 
-    /**
-     * Ubah Seluruh Data & Lampiran
-     */
     public function update(Request $request, string $id): JsonResponse
     {
         $suratMasuk = SuratMasuk::find($id);
@@ -89,14 +81,14 @@ class SuratMasukController extends Controller
         }
 
         $validated = $request->validate([
-            'nomor_surat' => 'sometimes|string',
+            'nomor_surat' => ['sometimes', 'string', Rule::unique('tb_surat_masuk', 'nomor_surat')->ignore($id)],
             'perihal' => 'sometimes|string',
             'asal_surat' => 'sometimes|string',
             'file_surat' => 'nullable|mimes:pdf,jpg,png|max:2048'
         ]);
 
         if ($request->hasFile('file_surat')) {
-            if ($suratMasuk->file_surat) {
+            if ($suratMasuk->file_surat && Storage::disk('public')->exists($suratMasuk->file_surat)) {
                 Storage::disk('public')->delete($suratMasuk->file_surat);
             }
             $validated['file_surat'] = $request->file('file_surat')->store('surat_masuk', 'public');
@@ -112,9 +104,7 @@ class SuratMasukController extends Controller
         ]);
     }
 
-    /**
-     * Ubah Status Spesifik
-     */
+
     public function updateStatus(Request $request, string $id): JsonResponse
     {
         $suratMasuk = SuratMasuk::find($id);
@@ -140,7 +130,7 @@ class SuratMasukController extends Controller
             return response()->json(['status' => 'error', 'message' => 'Data tidak ditemukan.'], 404);
         }
 
-        if ($suratMasuk->file_surat) {
+        if ($suratMasuk->file_surat && Storage::disk('public')->exists($suratMasuk->file_surat)) {
             Storage::disk('public')->delete($suratMasuk->file_surat);
         }
 
