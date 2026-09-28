@@ -39,7 +39,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Modul Surat Masuk (Akses: Super Admin, Operator)
     Route::middleware('role:super_admin,operator')->group(function () {
         Route::get('/surat-masuk', [SuratMasukController::class, 'index']);
-        Route::post('/surat-masuk', [SuratMasukController::class, 'store']);
+        Route::post('/surat-masuk/simpan', [SuratMasukController::class, 'store']);
         Route::get('/surat-masuk/{id}', [SuratMasukController::class, 'show']);
         Route::post('/surat-masuk/{id}', [SuratMasukController::class, 'update']);
         Route::patch('/surat-masuk/{id}/status', [SuratMasukController::class, 'updateStatus']);

@@ -79,9 +79,11 @@ class SuperAdminController extends Controller
             'role' => [
                 'required',
                 Rule::in([
-                    'pimpinan',
                     'super_admin',
-                    'user',
+                    'pimpinan',
+                    'operator',
+                    'ketua_tim',
+                    'pegawai',
                 ]),
             ],
         ]);
@@ -123,12 +125,13 @@ class SuperAdminController extends Controller
             'role' => [
                 'required',
                 Rule::in([
-                    'pimpinan',
                     'super_admin',
-                    'user',
+                    'pimpinan',
+                    'operator',
+                    'ketua_tim',
+                    'pegawai',
                 ]),
             ],
-
             'password' => [
                 'nullable',
                 'string',
