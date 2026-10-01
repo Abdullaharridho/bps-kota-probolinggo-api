@@ -269,45 +269,44 @@ class TimController extends Controller
         $validated = $request->validate([
             'pegawai_id' => [
                 'required',
+                'integer',
                 Rule::exists('users', 'id')
-                    ->whereNotIn('role', [
-                        'operator',
-                        'super_admin'
-                    ]),
+                    ->where('role', 'pegawai'),
             ],
         ]);
 
         $pegawaiId = (int) $validated['pegawai_id'];
 
-        // Ketua tidak perlu dimasukkan kembali sebagai anggota.
-        if ((int) $tim->ketua_id === $pegawaiId) {
+        // Pegawai yang menjadi ketua tim tidak boleh ditambahkan.
+        $sebagaiKetua = DB::table('tb_tim')
+            ->where('ketua_id', $pegawaiId)
+            ->exists();
+
+        if ($sebagaiKetua) {
             return response()->json([
                 'success' => false,
-                'message' => 'Ketua tim tidak perlu ditambahkan sebagai anggota.'
+                'message' => 'Pegawai tersebut sudah menjadi ketua tim.'
             ], 422);
         }
 
-        // Cek apakah pegawai sudah menjadi anggota tim ini.
-        $exists = DB::table('tb_anggota_tim')
-            ->where('tim_id', $id)
+        // Pegawai hanya boleh menjadi anggota satu tim.
+        $sebagaiAnggota = DB::table('tb_anggota_tim')
             ->where('pegawai_id', $pegawaiId)
             ->exists();
 
-        if ($exists) {
+        if ($sebagaiAnggota) {
             return response()->json([
                 'success' => false,
-                'message' => 'Pegawai tersebut sudah menjadi anggota di tim ini.'
+                'message' => 'Pegawai tersebut sudah tergabung dalam tim lain.'
             ], 422);
         }
 
-        DB::transaction(function () use ($id, $pegawaiId) {
-            DB::table('tb_anggota_tim')->insert([
-                'tim_id' => $id,
-                'pegawai_id' => $pegawaiId,
-                'created_at' => now(),
-                'updated_at' => now()
-            ]);
-        });
+        DB::table('tb_anggota_tim')->insert([
+            'tim_id' => $id,
+            'pegawai_id' => $pegawaiId,
+            'created_at' => now(),
+            'updated_at' => now()
+        ]);
 
         return response()->json([
             'success' => true,
@@ -347,6 +346,32 @@ class TimController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Anggota berhasil dihapus dari tim.'
+        ]);
+    }
+    public function pegawaiTersedia()
+    {
+        $pegawai = DB::table('users')
+            ->select(
+                'users.id',
+                'users.name',
+                'users.role'
+            )
+            ->where('users.role', 'pegawai')
+            ->whereNotIn('users.id', function ($query) {
+                $query->select('pegawai_id')
+                    ->from('tb_anggota_tim');
+            })
+            ->whereNotIn('users.id', function ($query) {
+                $query->select('ketua_id')
+                    ->from('tb_tim');
+            })
+            ->orderBy('users.name')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Daftar pegawai yang tersedia berhasil diambil.',
+            'data' => $pegawai
         ]);
     }
 }

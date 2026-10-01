@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\KegiatanHarianController;
 use App\Http\Controllers\Api\SuperAdminController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\SuratMasukController;
@@ -37,7 +38,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Modul Surat Masuk (Akses: Super Admin, Operator)
-    Route::middleware('role:super_admin,operator')->group(function () {
+    Route::middleware('role:super_admin,operator,ketua_tim,pegawai')->group(function () {
         Route::get('/surat-masuk', [SuratMasukController::class, 'index']);
         Route::post('/surat-masuk/simpan', [SuratMasukController::class, 'store']);
         Route::get('/surat-masuk/{id}', [SuratMasukController::class, 'show']);
@@ -46,8 +47,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/surat-masuk/{id}', [SuratMasukController::class, 'destroy']);
     });
 
+    //for kegiatan harian pegawai
+
+
+    Route::middleware(['role:pegawai'])->group(function () {
+
+        Route::get('/kegiatan-harian', [KegiatanHarianController::class, 'index']);
+        Route::post('/kegiatan-harian', [KegiatanHarianController::class, 'store']);
+        Route::get('/kegiatan-harian/{id}', [KegiatanHarianController::class, 'show']);
+        Route::put('/kegiatan-harian/{id}', [KegiatanHarianController::class, 'update']);
+        Route::delete('/kegiatan-harian/{id}', [KegiatanHarianController::class, 'destroy']);
+    });
+
     // Modul Penugasan, Kolaborasi, dan Tim (Akses: Super Admin, Pimpinan, User)
-    Route::middleware('role:super_admin,pimpinan,user')->group(function () {
+    Route::middleware('role:super_admin,pimpinan,pegawai,ketua_tim')->group(function () {
 
         // Penugasan
         Route::get('/penugasan', [PenugasanController::class, 'index']);
@@ -72,6 +85,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/laporan/{id}', [LaporanKegiatanController::class, 'destroy']);
 
         // Manajemen Tim & Anggota
+        Route::get('/tim/pegawai-tersedia', [
+            TimController::class,
+            'pegawaiTersedia'
+        ]);
         Route::get('/tim', [TimController::class, 'index']);
         Route::post('/tim', [TimController::class, 'store']);
         Route::get('/tim/{id}', [TimController::class, 'show']);

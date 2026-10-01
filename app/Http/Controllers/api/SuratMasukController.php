@@ -107,7 +107,7 @@ class SuratMasukController extends Controller
     ]);
 
     $validated['dicatat_oleh'] = $request->user()->id;
-    $validated['status'] = $request->status ?? 'baru';
+    $validated['status'] = 'baru';
 
     if ($request->hasFile('file_surat')) {
         $validated['file_surat'] = $request
