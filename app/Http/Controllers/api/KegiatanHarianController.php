@@ -14,57 +14,79 @@ class KegiatanHarianController extends Controller
      * Menampilkan daftar kegiatan milik pegawai yang login.
      */
     public function index(Request $request)
-    {
-        try {
-            $userId = $request->user()->id;
+{
+    try {
+        $user = $request->user();
 
-            $query = DB::table('tb_kegiatan_harian')
-                ->where('user_id', $userId);
+        $query = DB::table('tb_kegiatan_harian')
+            ->leftJoin(
+                'users',
+                'tb_kegiatan_harian.user_id',
+                '=',
+                'users.id'
+            )
+            ->select(
+                'tb_kegiatan_harian.*',
+                'users.name as nama_pegawai'
+            );
 
-            if ($request->filled('tanggal')) {
-                $validator = Validator::make(
-                    $request->only('tanggal'),
-                    [
-                        'tanggal' => 'required|date_format:Y-m-d',
-                    ],
-                    [
-                        'tanggal.required' => 'Tanggal wajib diisi.',
-                        'tanggal.date_format' =>
-                            'Format tanggal harus YYYY-MM-DD.',
-                    ]
-                );
+        // Jika bukan Pimpinan, tetap tampilkan kegiatan
+        // milik pengguna yang sedang login saja.
+        if ($user->role !== 'pimpinan') {
+            $query->where(
+                'tb_kegiatan_harian.user_id',
+                $user->id
+            );
+        }
 
-                if ($validator->fails()) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Tanggal yang dikirim tidak valid.',
-                        'errors' => $validator->errors(),
-                    ], 422);
-                }
+        if ($request->filled('tanggal')) {
+            $validator = Validator::make(
+                $request->only('tanggal'),
+                [
+                    'tanggal' => 'required|date_format:Y-m-d',
+                ],
+                [
+                    'tanggal.required' => 'Tanggal wajib diisi.',
+                    'tanggal.date_format' =>
+                        'Format tanggal harus YYYY-MM-DD.',
+                ]
+            );
 
-                $query->where('tanggal', $request->tanggal);
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Tanggal yang dikirim tidak valid.',
+                    'errors' => $validator->errors(),
+                ], 422);
             }
 
-            $data = $query
-                ->orderByDesc('tanggal')
-                ->orderBy('jam_mulai')
-                ->get();
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Daftar kegiatan berhasil dimuat.',
-                'data' => $data,
-            ], 200);
-
-        } catch (Throwable $e) {
-            report($e);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Terjadi kesalahan saat mengambil daftar kegiatan.',
-            ], 500);
+            $query->where(
+                'tb_kegiatan_harian.tanggal',
+                $request->tanggal
+            );
         }
+
+        $data = $query
+            ->orderByDesc('tb_kegiatan_harian.tanggal')
+            ->orderBy('tb_kegiatan_harian.jam_mulai')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Daftar kegiatan berhasil dimuat.',
+            'data' => $data,
+        ], 200);
+
+    } catch (Throwable $e) {
+        report($e);
+
+        return response()->json([
+            'success' => false,
+            'message' =>
+                'Terjadi kesalahan saat mengambil daftar kegiatan.',
+        ], 500);
     }
+}
 
     /**
      * Menyimpan kegiatan baru.
@@ -153,36 +175,58 @@ class KegiatanHarianController extends Controller
     /**
      * Menampilkan detail kegiatan milik pegawai yang login.
      */
-    public function show(Request $request, $id)
-    {
-        try {
-            $data = DB::table('tb_kegiatan_harian')
-                ->where('id', $id)
-                ->where('user_id', $request->user()->id)
-                ->first();
+   public function show(Request $request, $id)
+{
+    try {
+        $user = $request->user();
 
-            if (!$data) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Kegiatan tidak ditemukan.',
-                ], 404);
-            }
+        $query = DB::table('tb_kegiatan_harian')
+            ->leftJoin(
+                'users',
+                'tb_kegiatan_harian.user_id',
+                '=',
+                'users.id'
+            )
+            ->select(
+                'tb_kegiatan_harian.*',
+                'users.name as nama_pegawai'
+            )
+            ->where('tb_kegiatan_harian.id', $id);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Detail kegiatan berhasil dimuat.',
-                'data' => $data,
-            ], 200);
+        // Pegawai hanya dapat membuka kegiatan miliknya.
+        // Pimpinan dapat membuka kegiatan semua pegawai.
+        if ($user->role !== 'pimpinan') {
+            $query->where(
+                'tb_kegiatan_harian.user_id',
+                $user->id
+            );
+        }
 
-        } catch (Throwable $e) {
-            report($e);
+        $data = $query->first();
 
+        if (!$data) {
             return response()->json([
                 'success' => false,
-                'message' => 'Terjadi kesalahan saat mengambil detail kegiatan.',
-            ], 500);
+                'message' => 'Kegiatan tidak ditemukan.',
+            ], 404);
         }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Detail kegiatan berhasil dimuat.',
+            'data' => $data,
+        ], 200);
+
+    } catch (Throwable $e) {
+        report($e);
+
+        return response()->json([
+            'success' => false,
+            'message' =>
+                'Terjadi kesalahan saat mengambil detail kegiatan.',
+        ], 500);
     }
+}
 
     /**
      * Mengubah nama kegiatan dan jam.

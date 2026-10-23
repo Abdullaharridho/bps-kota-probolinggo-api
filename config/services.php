@@ -13,6 +13,10 @@ return [
     | a conventional file to locate the various service credentials.
     |
     */
+    'fonnte' => [
+        'token' => env('FONNTE_API_KEY'),
+        'url' => env('FONNTE_API_URL', 'https://api.fonnte.com/send'),
+    ],
 
     'postmark' => [
         'key' => env('POSTMARK_API_KEY'),

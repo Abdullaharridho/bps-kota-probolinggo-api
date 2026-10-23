@@ -5,42 +5,73 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
+use Throwable;
 
 class TimController extends Controller
 {
     /**
      * Daftar tim beserta nama ketua.
      */
-    public function index(Request $request)
-    {
-        $query = DB::table('tb_tim')
-            ->join('users', 'tb_tim.ketua_id', '=', 'users.id')
-            ->select(
-                'tb_tim.*',
-                'users.name as nama_ketua'
-            )
-            ->orderBy('tb_tim.created_at', 'desc');
+    /**
+ * Daftar tim beserta nama ketua.
+ * Khusus pimpinan: sertakan daftar anggota setiap tim.
+ */
+public function index(Request $request)
+{
+    $query = DB::table('tb_tim')
+        ->join('users', 'tb_tim.ketua_id', '=', 'users.id')
+        ->select(
+            'tb_tim.*',
+            'users.name as nama_ketua'
+        )
+        ->orderBy('tb_tim.created_at', 'desc');
 
-        if ($request->filled('search')) {
-            $query->where(
-                'tb_tim.nama_tim',
-                'like',
-                '%' . $request->search . '%'
-            );
-        }
-
-        if ($request->filled('status')) {
-            $query->where('tb_tim.status', $request->status);
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Data tim berhasil diambil.',
-            'data' => $query->get()
-        ]);
+    if ($request->filled('search')) {
+        $query->where(
+            'tb_tim.nama_tim',
+            'like',
+            '%' . $request->search . '%'
+        );
     }
 
+    if ($request->filled('status')) {
+        $query->where('tb_tim.status', $request->status);
+    }
+
+    $daftarTim = $query->get();
+
+    // Tambahan khusus pimpinan.
+    if ($request->user() && $request->user()->role === 'pimpinan') {
+        foreach ($daftarTim as $tim) {
+            $tim->anggota = DB::table('tb_anggota_tim')
+                ->join(
+                    'users',
+                    'tb_anggota_tim.pegawai_id',
+                    '=',
+                    'users.id'
+                )
+                ->select(
+                    'tb_anggota_tim.id as id_keanggotaan',
+                    'users.id as pegawai_id',
+                    'users.name',
+                    'users.role'
+                )
+                ->where('tb_anggota_tim.tim_id', $tim->id)
+                ->orderBy('users.name')
+                ->get();
+        }
+    }
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Data tim berhasil diambil.',
+        'data' => $daftarTim
+    ]);
+}
     /**
      * Detail tim beserta daftar anggotanya.
      */
@@ -373,5 +404,89 @@ class TimController extends Controller
             'message' => 'Daftar pegawai yang tersedia berhasil diambil.',
             'data' => $pegawai
         ]);
+    }
+     public function send(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'target' => ['required', 'string', 'regex:/^[0-9]{8,16}$/'],
+            'message' => ['required', 'string', 'max:2000'],
+        ], [
+            'target.required' => 'Nomor tujuan wajib diisi.',
+            'target.regex' => 'Format nomor tujuan tidak valid. Gunakan angka dengan kode negara, misalnya 6281234567890.',
+            'message.required' => 'Pesan wajib diisi.',
+            'message.max' => 'Pesan maksimal 2000 karakter.',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Data yang dikirim tidak valid.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $token = config('services.fonnte.token');
+        $url = config('services.fonnte.url');
+
+        if (empty($token)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Konfigurasi API Fonnte belum tersedia.',
+            ], 500);
+        }
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => $token,
+            ])
+                ->asForm()
+                ->timeout(30)
+                ->post($url, [
+                    'target' => $validator->validated()['target'],
+                    'message' => $validator->validated()['message'],
+                ]);
+
+            if (!$response->successful()) {
+                Log::warning('Fonnte API HTTP error', [
+                    'status' => $response->status(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Layanan pengiriman pesan sedang bermasalah.',
+                ], 502);
+            }
+
+            $result = $response->json();
+
+            if (!is_array($result)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Respons dari layanan Fonnte tidak valid.',
+                ], 502);
+            }
+
+            $accepted = ($result['status'] ?? false) === true
+                || ($result['status'] ?? null) === 1
+                || ($result['status'] ?? null) === 'true';
+
+            return response()->json([
+                'success' => $accepted,
+                'message' => $accepted
+                    ? 'Permintaan pengiriman pesan berhasil diproses.'
+                    : ($result['reason'] ?? 'Fonnte menolak permintaan pengiriman pesan.'),
+                'data' => $result,
+            ], $accepted ? 200 : 502);
+
+        } catch (Throwable $e) {
+            Log::error('Fonnte API connection error', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Tidak dapat terhubung ke layanan Fonnte.',
+            ], 502);
+        }
     }
 }

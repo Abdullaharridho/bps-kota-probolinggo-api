@@ -15,19 +15,16 @@ return new class extends Migration
                 ->constrained('tb_ruangan')
                 ->restrictOnDelete();
 
-            $table->foreignId('penugasan_id')
-                ->nullable()
-                ->constrained('tb_penugasan')
-                ->nullOnDelete();
+            $table->string('nama_pemesan');
 
-            $table->foreignId('dipesan_oleh')
-                ->constrained('users')
-                ->restrictOnDelete();
+            $table->string('instansi')->nullable();
 
             $table->string('judul_kegiatan');
 
             $table->date('tanggal');
+
             $table->time('waktu_mulai');
+
             $table->time('waktu_selesai');
 
             $table->enum('status', [

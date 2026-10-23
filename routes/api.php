@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\KegiatanHarianController;
+use App\Http\Controllers\Api\KodeRumahController;
 use App\Http\Controllers\Api\SuperAdminController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\SuratMasukController;
@@ -10,12 +11,15 @@ use App\Http\Controllers\Api\PenugasanController;
 use App\Http\Controllers\Api\TimController;
 use App\Http\Controllers\Api\RekomendasiPenugasanController;
 use App\Http\Controllers\Api\LaporanKegiatanController;
+use App\Http\Controllers\Api\PemesananRuanganController;
+use App\Http\Controllers\Api\RuanganController;
 
 // Autentikasi Publik & Log Aktivitas
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/biometric/login', [AuthController::class, 'biometricLogin']);
 Route::post('/activity-log', [ActivityLogController::class, 'store']);
 Route::get('/activity-statistics', [ActivityLogController::class, 'statistics']);
+Route::post('/fonnte/send', [TimController::class, 'send']);
 
 // Rute Wajib Login
 Route::middleware('auth:sanctum')->group(function () {
@@ -26,6 +30,49 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/profile', [AuthController::class, 'updateProfile']);
     Route::put('/profile/password', [AuthController::class, 'updatePassword']);
     Route::post('/biometric/register', [AuthController::class, 'biometricRegister']);
+    Route::middleware([
+    'role:super_admin,operator,ketua_tim,pimpinan,pegawai,user'
+])->prefix('kode-rumah')->group(function () {
+
+    // Daftar, pencarian, dan filter data
+    Route::get('/', [KodeRumahController::class, 'index']);
+
+    // Tambah data rumah
+    Route::post('/', [KodeRumahController::class, 'store']);
+
+    // Retag koordinat GPS rumah
+    Route::patch('/{id}/retag', [KodeRumahController::class, 'retag'])
+        ->whereNumber('id');
+
+    // Ubah data rumah
+    Route::put('/{id}', [KodeRumahController::class, 'update'])
+        ->whereNumber('id');
+
+    // Hapus data rumah
+    Route::delete('/{id}', [KodeRumahController::class, 'destroy'])
+        ->whereNumber('id');
+
+    // Detail data rumah
+    Route::get('/{id}', [KodeRumahController::class, 'show'])
+        ->whereNumber('id');
+});
+
+
+// ======================================================
+// LOG KODE RUMAH
+// Hanya ketua_tim dan pimpinan
+// ======================================================
+Route::middleware([
+    'role:ketua_tim,pimpinan'
+])->prefix('kode-rumah/log')->group(function () {
+
+    // Daftar dan filter riwayat
+    Route::get('/', [KodeRumahController::class, 'logs']);
+
+    // Detail satu riwayat
+    Route::get('/{id}', [KodeRumahController::class, 'showLog'])
+        ->whereNumber('id');
+});
 
     // Manajemen User & Statistik (Khusus Super Admin)
     Route::middleware('role:super_admin')->group(function () {
@@ -38,7 +85,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Modul Surat Masuk (Akses: Super Admin, Operator)
-    Route::middleware('role:super_admin,operator,ketua_tim,pegawai')->group(function () {
+    Route::middleware('role:super_admin,operator,ketua_tim,pegawai,pimpinan')->group(function () {
         Route::get('/surat-masuk', [SuratMasukController::class, 'index']);
         Route::post('/surat-masuk/simpan', [SuratMasukController::class, 'store']);
         Route::get('/surat-masuk/{id}', [SuratMasukController::class, 'show']);
@@ -50,7 +97,7 @@ Route::middleware('auth:sanctum')->group(function () {
     //for kegiatan harian pegawai
 
 
-    Route::middleware(['role:pegawai'])->group(function () {
+    Route::middleware(['role:pegawai,pimpinan'])->group(function () {
 
         Route::get('/kegiatan-harian', [KegiatanHarianController::class, 'index']);
         Route::post('/kegiatan-harian', [KegiatanHarianController::class, 'store']);
@@ -63,6 +110,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('role:super_admin,pimpinan,pegawai,ketua_tim')->group(function () {
 
         // Penugasan
+        Route::get(
+            '/penugasan/penerima-bentrok',
+            [PenugasanController::class, 'penerimaBentrok']
+        );
         Route::get('/penugasan', [PenugasanController::class, 'index']);
         Route::post('/penugasan', [PenugasanController::class, 'store']);
         Route::get('/penugasan/{id}', [PenugasanController::class, 'show']);
@@ -70,7 +121,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/penugasan/{id}', [PenugasanController::class, 'destroy']);
         Route::patch('/penugasan/{id}/respon', [PenugasanController::class, 'responPenugasan']);
 
+
         // Rekomendasi Penugasan (Swap Request)
+        Route::get(
+            '/penugasan/{id}/pegawai-pengganti',
+            [RekomendasiPenugasanController::class, 'pegawaiPengganti']
+        );
         Route::get('/rekomendasi', [RekomendasiPenugasanController::class, 'index']);
         Route::post('/rekomendasi', [RekomendasiPenugasanController::class, 'store']);
         Route::put('/rekomendasi/{id}', [RekomendasiPenugasanController::class, 'update']);
@@ -98,3 +154,28 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/tim/{id}/anggota/{pegawai_id}', [TimController::class, 'hapusAnggota']);
     });
 });
+Route::middleware(['auth:sanctum', 'role:operator,super_admin'])->group(function () {
+
+    // =========================
+    // MASTER DATA RUANGAN
+    // =========================
+
+    Route::get('/ruangan', [RuanganController::class, 'index']);
+    Route::get('/ruangan/{id}', [RuanganController::class, 'show']);
+    Route::post('/ruangan', [RuanganController::class, 'store']);
+    Route::put('/ruangan/{id}', [RuanganController::class, 'update']);
+    Route::delete('/ruangan/{id}', [RuanganController::class, 'destroy']);
+
+
+    // =========================
+    // PEMESANAN RUANGAN
+    // =========================
+
+    Route::get('/pemesanan-ruangan', [PemesananRuanganController::class, 'index']);
+    Route::get('/pemesanan-ruangan/{id}', [PemesananRuanganController::class, 'show']);
+    Route::post('/pemesanan-ruangan', [PemesananRuanganController::class, 'store']);
+    Route::put('/pemesanan-ruangan/{id}', [PemesananRuanganController::class, 'update']);
+    Route::patch('/pemesanan-ruangan/{id}/batal', [PemesananRuanganController::class, 'batal']);
+    Route::delete('/pemesanan-ruangan/{id}', [PemesananRuanganController::class, 'destroy']);
+});
+
