@@ -9,69 +9,67 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class TimController extends Controller
 {
     /**
      * Daftar tim beserta nama ketua.
+     * Khusus pimpinan: sertakan daftar anggota setiap tim.
      */
-    /**
- * Daftar tim beserta nama ketua.
- * Khusus pimpinan: sertakan daftar anggota setiap tim.
- */
-public function index(Request $request)
-{
-    $query = DB::table('tb_tim')
-        ->join('users', 'tb_tim.ketua_id', '=', 'users.id')
-        ->select(
-            'tb_tim.*',
-            'users.name as nama_ketua'
-        )
-        ->orderBy('tb_tim.created_at', 'desc');
+    public function index(Request $request)
+    {
+        $query = DB::table('tb_tim')
+            ->join('users', 'tb_tim.ketua_id', '=', 'users.id')
+            ->select(
+                'tb_tim.*',
+                'users.name as nama_ketua'
+            )
+            ->orderBy('tb_tim.created_at', 'desc');
 
-    if ($request->filled('search')) {
-        $query->where(
-            'tb_tim.nama_tim',
-            'like',
-            '%' . $request->search . '%'
-        );
-    }
-
-    if ($request->filled('status')) {
-        $query->where('tb_tim.status', $request->status);
-    }
-
-    $daftarTim = $query->get();
-
-    // Tambahan khusus pimpinan.
-    if ($request->user() && $request->user()->role === 'pimpinan') {
-        foreach ($daftarTim as $tim) {
-            $tim->anggota = DB::table('tb_anggota_tim')
-                ->join(
-                    'users',
-                    'tb_anggota_tim.pegawai_id',
-                    '=',
-                    'users.id'
-                )
-                ->select(
-                    'tb_anggota_tim.id as id_keanggotaan',
-                    'users.id as pegawai_id',
-                    'users.name',
-                    'users.role'
-                )
-                ->where('tb_anggota_tim.tim_id', $tim->id)
-                ->orderBy('users.name')
-                ->get();
+        if ($request->filled('search')) {
+            $query->where(
+                'tb_tim.nama_tim',
+                'like',
+                '%' . $request->search . '%'
+            );
         }
+
+        if ($request->filled('status')) {
+            $query->where('tb_tim.status', $request->status);
+        }
+
+        $daftarTim = $query->get();
+
+        if ($request->user() && $request->user()->role === 'pimpinan') {
+            foreach ($daftarTim as $tim) {
+                $tim->anggota = DB::table('tb_anggota_tim')
+                    ->join(
+                        'users',
+                        'tb_anggota_tim.pegawai_id',
+                        '=',
+                        'users.id'
+                    )
+                    ->select(
+                        'tb_anggota_tim.id as id_keanggotaan',
+                        'users.id as pegawai_id',
+                        'users.name',
+                        'users.role'
+                    )
+                    ->where('tb_anggota_tim.tim_id', $tim->id)
+                    ->orderBy('users.name')
+                    ->get();
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Data tim berhasil diambil.',
+            'data' => $daftarTim
+        ]);
     }
 
-    return response()->json([
-        'success' => true,
-        'message' => 'Data tim berhasil diambil.',
-        'data' => $daftarTim
-    ]);
-}
     /**
      * Detail tim beserta daftar anggotanya.
      */
@@ -119,8 +117,9 @@ public function index(Request $request)
     /**
      * Membuat tim baru.
      *
-     * Ketua hanya boleh berasal dari role selain
-     * operator dan super_admin.
+     * Hanya pegawai yang boleh menjadi ketua.
+     * Jika pegawai masih menjadi anggota tim,
+     * keanggotaannya otomatis dihapus.
      */
     public function store(Request $request)
     {
@@ -133,11 +132,9 @@ public function index(Request $request)
 
             'ketua_id' => [
                 'required',
+                'integer',
                 Rule::exists('users', 'id')
-                    ->whereNotIn('role', [
-                        'operator',
-                        'super_admin'
-                    ]),
+                    ->where('role', 'pegawai')
             ],
 
             'keterangan' => [
@@ -149,13 +146,69 @@ public function index(Request $request)
                 'nullable',
                 Rule::in(['aktif', 'nonaktif'])
             ],
+        ], [
+            'ketua_id.exists' => 'Ketua tim hanya boleh dipilih dari pengguna dengan role pegawai.'
         ]);
 
-        $validated['status'] = $validated['status'] ?? 'aktif';
-        $validated['created_at'] = now();
-        $validated['updated_at'] = now();
+        $id = DB::transaction(function () use ($validated) {
 
-        $id = DB::table('tb_tim')->insertGetId($validated);
+            $waktu = now();
+
+            // Kunci data calon ketua agar tidak diproses
+            // bersamaan oleh transaksi tim lainnya.
+            $calonKetua = DB::table('users')
+                ->where('id', $validated['ketua_id'])
+                ->lockForUpdate()
+                ->first();
+
+            if (!$calonKetua || $calonKetua->role !== 'pegawai') {
+                throw ValidationException::withMessages([
+                    'ketua_id' => [
+                        'Ketua tim hanya boleh berasal dari pegawai.'
+                    ]
+                ]);
+            }
+
+            // Pastikan pegawai belum menjadi ketua tim lain.
+            $sudahMenjadiKetua = DB::table('tb_tim')
+                ->where('ketua_id', $calonKetua->id)
+                ->exists();
+
+            if ($sudahMenjadiKetua) {
+                throw ValidationException::withMessages([
+                    'ketua_id' => [
+                        'Pegawai tersebut sudah menjadi ketua tim lain.'
+                    ]
+                ]);
+            }
+
+            // Jika masih menjadi anggota tim,
+            // keluarkan dari seluruh tim terlebih dahulu.
+            DB::table('tb_anggota_tim')
+                ->where('pegawai_id', $calonKetua->id)
+                ->delete();
+
+            // Buat tim dengan menyimpan role sebelumnya.
+            $id = DB::table('tb_tim')->insertGetId([
+                'nama_tim' => $validated['nama_tim'],
+                'ketua_id' => $calonKetua->id,
+                'role_ketua_sebelumnya' => $calonKetua->role,
+                'keterangan' => $validated['keterangan'] ?? null,
+                'status' => $validated['status'] ?? 'aktif',
+                'created_at' => $waktu,
+                'updated_at' => $waktu
+            ]);
+
+            // Ubah role pegawai menjadi ketua_tim.
+            DB::table('users')
+                ->where('id', $calonKetua->id)
+                ->update([
+                    'role' => 'ketua_tim',
+                    'updated_at' => $waktu
+                ]);
+
+            return $id;
+        });
 
         $tim = DB::table('tb_tim')
             ->join('users', 'tb_tim.ketua_id', '=', 'users.id')
@@ -176,22 +229,17 @@ public function index(Request $request)
     /**
      * Mengubah data tim.
      *
-     * Semua field bersifat opsional, tetapi jika
-     * dikirim harus memenuhi aturan validasi.
+     * Jika ketua tidak berubah:
+     * - Perubahan nama, keterangan, dan status tetap diperbolehkan.
+     *
+     * Jika ketua diganti:
+     * 1. Ketua baru harus ber-role pegawai.
+     * 2. Ketua lama dikembalikan ke role sebelumnya.
+     * 3. Keanggotaan ketua baru di tim lain dihapus.
+     * 4. Role ketua baru diubah menjadi ketua_tim.
      */
     public function update(Request $request, $id)
     {
-        $tim = DB::table('tb_tim')
-            ->where('id', $id)
-            ->first();
-
-        if (!$tim) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Data tim tidak ditemukan.'
-            ], 404);
-        }
-
         $validated = $request->validate([
             'nama_tim' => [
                 'sometimes',
@@ -200,14 +248,14 @@ public function index(Request $request)
                 'max:255'
             ],
 
+            // Validasi hanya memastikan ID pengguna tersedia.
+            // Pemeriksaan role pegawai dilakukan di dalam transaksi
+            // apabila ketua benar-benar diganti.
             'ketua_id' => [
                 'sometimes',
                 'required',
-                Rule::exists('users', 'id')
-                    ->whereNotIn('role', [
-                        'operator',
-                        'super_admin'
-                    ]),
+                'integer',
+                'exists:users,id'
             ],
 
             'keterangan' => [
@@ -221,6 +269,8 @@ public function index(Request $request)
                 'required',
                 Rule::in(['aktif', 'nonaktif'])
             ],
+        ], [
+            'ketua_id.exists' => 'Pengguna yang dipilih sebagai ketua tim tidak ditemukan.'
         ]);
 
         if (empty($validated)) {
@@ -230,11 +280,97 @@ public function index(Request $request)
             ], 422);
         }
 
-        $validated['updated_at'] = now();
+        DB::transaction(function () use ($validated, $id) {
 
-        DB::table('tb_tim')
-            ->where('id', $id)
-            ->update($validated);
+            $waktu = now();
+
+            $tim = DB::table('tb_tim')
+                ->where('id', $id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$tim) {
+                throw ValidationException::withMessages([
+                    'tim' => ['Data tim tidak ditemukan.']
+                ]);
+            }
+
+            // Proses pergantian ketua hanya jika ID berubah.
+            if (
+                isset($validated['ketua_id']) &&
+                (int) $validated['ketua_id'] !== (int) $tim->ketua_id
+            ) {
+                $calonKetua = DB::table('users')
+                    ->where('id', $validated['ketua_id'])
+                    ->lockForUpdate()
+                    ->first();
+
+                // Ketua baru wajib berasal dari pegawai.
+                if (!$calonKetua || $calonKetua->role !== 'pegawai') {
+                    throw ValidationException::withMessages([
+                        'ketua_id' => [
+                            'Ketua tim hanya boleh berasal dari pegawai.'
+                        ]
+                    ]);
+                }
+
+                // Tidak boleh menjadi ketua di tim lain.
+                $sudahMenjadiKetua = DB::table('tb_tim')
+                    ->where('ketua_id', $calonKetua->id)
+                    ->where('id', '!=', $id)
+                    ->exists();
+
+                if ($sudahMenjadiKetua) {
+                    throw ValidationException::withMessages([
+                        'ketua_id' => [
+                            'Pegawai tersebut sudah menjadi ketua tim lain.'
+                        ]
+                    ]);
+                }
+
+                // Pulihkan role ketua lama.
+                $ketuaLama = DB::table('users')
+                    ->where('id', $tim->ketua_id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (
+                    $ketuaLama &&
+                    $ketuaLama->role === 'ketua_tim' &&
+                    !empty($tim->role_ketua_sebelumnya)
+                ) {
+                    DB::table('users')
+                        ->where('id', $ketuaLama->id)
+                        ->update([
+                            'role' => $tim->role_ketua_sebelumnya,
+                            'updated_at' => $waktu
+                        ]);
+                }
+
+                // Keluarkan calon ketua dari seluruh tim
+                // jika sebelumnya menjadi anggota.
+                DB::table('tb_anggota_tim')
+                    ->where('pegawai_id', $calonKetua->id)
+                    ->delete();
+
+                // Ubah role calon ketua menjadi ketua_tim.
+                DB::table('users')
+                    ->where('id', $calonKetua->id)
+                    ->update([
+                        'role' => 'ketua_tim',
+                        'updated_at' => $waktu
+                    ]);
+
+                // Simpan role sebelumnya milik ketua baru.
+                $validated['role_ketua_sebelumnya'] = $calonKetua->role;
+            }
+
+            $validated['updated_at'] = $waktu;
+
+            DB::table('tb_tim')
+                ->where('id', $id)
+                ->update($validated);
+        });
 
         $timTerbaru = DB::table('tb_tim')
             ->join('users', 'tb_tim.ketua_id', '=', 'users.id')
@@ -255,21 +391,47 @@ public function index(Request $request)
     /**
      * Menghapus tim.
      *
-     * Anggota tim ikut terhapus melalui
-     * cascadeOnDelete pada foreign key tim_id.
+     * Role ketua dikembalikan ke role sebelumnya.
+     * Anggota ikut terhapus melalui cascadeOnDelete.
      */
     public function destroy($id)
     {
-        $deleted = DB::table('tb_tim')
-            ->where('id', $id)
-            ->delete();
+        DB::transaction(function () use ($id) {
 
-        if (!$deleted) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Data tim tidak ditemukan.'
-            ], 404);
-        }
+            $tim = DB::table('tb_tim')
+                ->where('id', $id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$tim) {
+                throw ValidationException::withMessages([
+                    'tim' => ['Data tim tidak ditemukan.']
+                ]);
+            }
+
+            $ketua = DB::table('users')
+                ->where('id', $tim->ketua_id)
+                ->lockForUpdate()
+                ->first();
+
+            // Pulihkan role ketua sebelum tim dihapus.
+            if (
+                $ketua &&
+                $ketua->role === 'ketua_tim' &&
+                !empty($tim->role_ketua_sebelumnya)
+            ) {
+                DB::table('users')
+                    ->where('id', $ketua->id)
+                    ->update([
+                        'role' => $tim->role_ketua_sebelumnya,
+                        'updated_at' => now()
+                    ]);
+            }
+
+            DB::table('tb_tim')
+                ->where('id', $id)
+                ->delete();
+        });
 
         return response()->json([
             'success' => true,
@@ -280,64 +442,82 @@ public function index(Request $request)
     /**
      * Menambahkan anggota ke dalam tim.
      *
-     * Anggota tidak boleh memiliki role operator
-     * atau super_admin, dan ketua tim tidak perlu
-     * dicatat kembali sebagai anggota.
+     * Hanya pegawai yang boleh menjadi anggota.
+     * Pegawai tidak boleh menjadi anggota lebih dari satu tim
+     * atau menjadi ketua tim.
      */
     public function tambahAnggota(Request $request, $id)
     {
-        $tim = DB::table('tb_tim')
-            ->where('id', $id)
-            ->first();
-
-        if (!$tim) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Tim tidak ditemukan.'
-            ], 404);
-        }
-
         $validated = $request->validate([
             'pegawai_id' => [
                 'required',
                 'integer',
                 Rule::exists('users', 'id')
-                    ->where('role', 'pegawai'),
+                    ->where('role', 'pegawai')
             ],
+        ], [
+            'pegawai_id.exists' => 'Anggota tim hanya boleh dipilih dari pengguna dengan role pegawai.'
         ]);
 
-        $pegawaiId = (int) $validated['pegawai_id'];
+        DB::transaction(function () use ($validated, $id) {
 
-        // Pegawai yang menjadi ketua tim tidak boleh ditambahkan.
-        $sebagaiKetua = DB::table('tb_tim')
-            ->where('ketua_id', $pegawaiId)
-            ->exists();
+            $pegawai = DB::table('users')
+                ->where('id', $validated['pegawai_id'])
+                ->lockForUpdate()
+                ->first();
 
-        if ($sebagaiKetua) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Pegawai tersebut sudah menjadi ketua tim.'
-            ], 422);
-        }
+            if (!$pegawai || $pegawai->role !== 'pegawai') {
+                throw ValidationException::withMessages([
+                    'pegawai_id' => [
+                        'Anggota tim hanya boleh berasal dari pegawai.'
+                    ]
+                ]);
+            }
 
-        // Pegawai hanya boleh menjadi anggota satu tim.
-        $sebagaiAnggota = DB::table('tb_anggota_tim')
-            ->where('pegawai_id', $pegawaiId)
-            ->exists();
+            $tim = DB::table('tb_tim')
+                ->where('id', $id)
+                ->lockForUpdate()
+                ->first();
 
-        if ($sebagaiAnggota) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Pegawai tersebut sudah tergabung dalam tim lain.'
-            ], 422);
-        }
+            if (!$tim) {
+                throw ValidationException::withMessages([
+                    'tim' => ['Tim tidak ditemukan.']
+                ]);
+            }
 
-        DB::table('tb_anggota_tim')->insert([
-            'tim_id' => $id,
-            'pegawai_id' => $pegawaiId,
-            'created_at' => now(),
-            'updated_at' => now()
-        ]);
+            // Ketua tidak boleh menjadi anggota.
+            $sebagaiKetua = DB::table('tb_tim')
+                ->where('ketua_id', $pegawai->id)
+                ->exists();
+
+            if ($sebagaiKetua) {
+                throw ValidationException::withMessages([
+                    'pegawai_id' => [
+                        'Pegawai tersebut sudah menjadi ketua tim.'
+                    ]
+                ]);
+            }
+
+            // Satu pegawai hanya boleh menjadi anggota satu tim.
+            $sebagaiAnggota = DB::table('tb_anggota_tim')
+                ->where('pegawai_id', $pegawai->id)
+                ->exists();
+
+            if ($sebagaiAnggota) {
+                throw ValidationException::withMessages([
+                    'pegawai_id' => [
+                        'Pegawai tersebut sudah tergabung dalam tim lain.'
+                    ]
+                ]);
+            }
+
+            DB::table('tb_anggota_tim')->insert([
+                'tim_id' => $id,
+                'pegawai_id' => $pegawai->id,
+                'created_at' => now(),
+                'updated_at' => now()
+            ]);
+        });
 
         return response()->json([
             'success' => true,
@@ -350,7 +530,6 @@ public function index(Request $request)
      */
     public function hapusAnggota($id, $pegawai_id)
     {
-        // Pastikan tim memang tersedia.
         $timExists = DB::table('tb_tim')
             ->where('id', $id)
             ->exists();
@@ -379,6 +558,13 @@ public function index(Request $request)
             'message' => 'Anggota berhasil dihapus dari tim.'
         ]);
     }
+
+    /**
+     * Mengambil pegawai yang tersedia untuk menjadi anggota.
+     *
+     * Pegawai yang sudah menjadi ketua atau anggota
+     * tidak akan ditampilkan.
+     */
     public function pegawaiTersedia()
     {
         $pegawai = DB::table('users')
@@ -405,11 +591,24 @@ public function index(Request $request)
             'data' => $pegawai
         ]);
     }
-     public function send(Request $request)
+
+    /**
+     * Mengirim pesan melalui Fonnte.
+     * Dipertahankan tanpa perubahan alur.
+     */
+    public function send(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'target' => ['required', 'string', 'regex:/^[0-9]{8,16}$/'],
-            'message' => ['required', 'string', 'max:2000'],
+            'target' => [
+                'required',
+                'string',
+                'regex:/^[0-9]{8,16}$/'
+            ],
+            'message' => [
+                'required',
+                'string',
+                'max:2000'
+            ],
         ], [
             'target.required' => 'Nomor tujuan wajib diisi.',
             'target.regex' => 'Format nomor tujuan tidak valid. Gunakan angka dengan kode negara, misalnya 6281234567890.',

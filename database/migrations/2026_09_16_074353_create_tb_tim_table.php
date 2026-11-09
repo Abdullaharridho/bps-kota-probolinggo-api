@@ -12,10 +12,13 @@ return new class extends Migration
             $table->id();
 
             $table->string('nama_tim');
-            
+
             $table->foreignId('ketua_id')
                 ->constrained('users')
                 ->restrictOnDelete();
+
+            // Menyimpan role ketua sebelum menjadi ketua_tim.
+            $table->string('role_ketua_sebelumnya', 50)->nullable();
 
             $table->text('keterangan')->nullable();
 

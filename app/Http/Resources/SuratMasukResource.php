@@ -28,8 +28,7 @@ class SuratMasukResource extends JsonResource
 
             'isi_ringkas' => $this->isi_ringkas,
 
-            // Field acara dalam bentuk flat
-            // Agar langsung cocok dengan model Android.
+            // Field acara dalam bentuk flat.
             'tanggal_acara' => $this->tanggal_acara
                 ? $this->tanggal_acara->format('Y-m-d')
                 : null,
@@ -44,7 +43,7 @@ class SuratMasukResource extends JsonResource
 
             'lokasi' => $this->lokasi,
 
-            // Tetap pertahankan struktur acara yang sudah ada.
+            // Tetap mempertahankan struktur acara.
             'acara' => [
                 'tanggal' => $this->tanggal_acara
                     ? $this->tanggal_acara->format('Y-m-d')
@@ -67,8 +66,22 @@ class SuratMasukResource extends JsonResource
 
             'status' => $this->status,
 
+            // Informasi tim yang ditugaskan.
+            'tim_id' => $this->tim_id,
+
+            'nama_tim' => $this->nama_tim ?? null,
+
+            // Informasi ketua tim.
+            'ketua_id' => $this->ketua_id ?? null,
+
+            'nama_ketua' => $this->nama_ketua ?? null,
+
+            'hp_ketua' => $this->hp_ketua ?? null,
+
+            // Informasi operator yang mencatat surat.
             'pencatat' => [
                 'id' => $this->dicatat_oleh,
+
                 'nama' => $this->whenLoaded(
                     'dicatatOleh',
                     fn () => $this->dicatatOleh->name

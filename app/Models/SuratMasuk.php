@@ -26,16 +26,19 @@ class SuratMasuk extends Model
         'file_surat',
         'status',
         'dicatat_oleh',
+        'tim_id',
     ];
 
     protected $casts = [
         'tanggal_surat' => 'date',
         'tanggal_diterima' => 'date',
         'tanggal_acara' => 'date',
+        'tim_id' => 'integer',
     ];
 
     /**
-     * Relasi ke tabel users (Operator yang mencatat surat)
+     * Relasi ke tabel users
+     * (Operator yang mencatat surat).
      */
     public function dicatatOleh(): BelongsTo
     {

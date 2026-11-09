@@ -16,27 +16,84 @@ use Throwable;
 
 class SuratMasukController extends Controller
 {
+    /**
+     * Query surat masuk dengan informasi tim dan ketua tim.
+     *
+     * Menggunakan Query Builder, tanpa Model Tim.
+     */
+    private function querySuratMasuk()
+    {
+        return SuratMasuk::query()
+            ->leftJoin(
+                'tb_tim',
+                'tb_surat_masuk.tim_id',
+                '=',
+                'tb_tim.id'
+            )
+            ->leftJoin(
+                'users as ketua_tim',
+                'tb_tim.ketua_id',
+                '=',
+                'ketua_tim.id'
+            )
+            ->select(
+                'tb_surat_masuk.*',
+                'tb_tim.nama_tim',
+                'tb_tim.ketua_id',
+                'ketua_tim.name as nama_ketua',
+                'ketua_tim.no_hp as hp_ketua'
+            )
+            ->with('dicatatOleh');
+    }
+
     public function index(Request $request): JsonResponse
     {
-        $query = SuratMasuk::with('dicatatOleh');
+        $query = $this->querySuratMasuk();
 
         if ($request->filled('search')) {
-            $query->where(function ($q) use ($request) {
-                $q->where('nomor_surat', 'like', '%' . $request->search . '%')
-                    ->orWhere('perihal', 'like', '%' . $request->search . '%')
-                    ->orWhere('asal_surat', 'like', '%' . $request->search . '%');
+            $search = $request->search;
+
+            $query->where(function ($q) use ($search) {
+                $q->where(
+                    'tb_surat_masuk.nomor_surat',
+                    'like',
+                    '%' . $search . '%'
+                )
+                    ->orWhere(
+                        'tb_surat_masuk.perihal',
+                        'like',
+                        '%' . $search . '%'
+                    )
+                    ->orWhere(
+                        'tb_surat_masuk.asal_surat',
+                        'like',
+                        '%' . $search . '%'
+                    )
+                    ->orWhere(
+                        'tb_tim.nama_tim',
+                        'like',
+                        '%' . $search . '%'
+                    )
+                    ->orWhere(
+                        'ketua_tim.name',
+                        'like',
+                        '%' . $search . '%'
+                    );
             });
         }
 
         if ($request->filled('status')) {
-            $query->where('status', $request->status);
+            $query->where(
+                'tb_surat_masuk.status',
+                $request->status
+            );
         }
 
         return response()->json([
             'status' => 'success',
             'message' => 'Daftar surat masuk berhasil diambil.',
             'data' => SuratMasukResource::collection(
-                $query->latest()->get()
+                $query->latest('tb_surat_masuk.created_at')->get()
             ),
         ]);
     }
@@ -95,6 +152,13 @@ class SuratMasukController extends Controller
                 'string',
             ],
 
+            // Tim tujuan surat masuk.
+            'tim_id' => [
+                'required',
+                Rule::exists('tb_tim', 'id')
+                    ->where('status', 'aktif'),
+            ],
+
             'status' => [
                 'nullable',
                 Rule::in([
@@ -123,12 +187,15 @@ class SuratMasukController extends Controller
         // Simpan surat terlebih dahulu.
         $suratMasuk = SuratMasuk::create($validated);
 
-        $suratMasuk->load('dicatatOleh');
+        // Ambil kembali data lengkap beserta tim dan ketua.
+        $suratMasuk = $this->querySuratMasuk()
+            ->where('tb_surat_masuk.id', $suratMasuk->id)
+            ->first();
 
         /*
          * Notifikasi WhatsApp hanya dijalankan saat CREATE.
-         * Tidak dijalankan pada index, show, update, updateStatus,
-         * maupun destroy.
+         * Tidak dijalankan pada index, show, update,
+         * updateStatus, maupun destroy.
          */
         $this->kirimNotifikasiSuratBaru($suratMasuk);
 
@@ -140,13 +207,16 @@ class SuratMasukController extends Controller
     }
 
     /**
-     * Mengirim satu permintaan API Fonnte untuk semua ketua tim aktif.
+     * Mengirim notifikasi WhatsApp kepada ketua tim tujuan.
+     *
+     * Tidak menggunakan Model Tim.
      */
     private function kirimNotifikasiSuratBaru(
         SuratMasuk $suratMasuk
     ): void {
         try {
             $token = config('services.fonnte.token');
+
             $url = config(
                 'services.fonnte.url',
                 'https://api.fonnte.com/send'
@@ -163,28 +233,57 @@ class SuratMasukController extends Controller
                 return;
             }
 
-            // Ambil nomor HP ketua tim aktif dan hilangkan duplikat.
-            $nomorHp = DB::table('users')
-                ->where('role', 'ketua_tim')
-                ->where('status', 'aktif')
-                ->whereNotNull('no_hp')
-                ->where('no_hp', '<>', '')
-                ->pluck('no_hp')
-                ->map(function ($nomor) {
-                    return trim($nomor);
-                })
-                ->filter()
-                ->unique()
-                ->values();
-
-            if ($nomorHp->isEmpty()) {
+            if (!$suratMasuk->tim_id) {
                 Log::info(
-                    'Notifikasi surat masuk dilewati: tidak ada nomor ketua tim aktif.',
+                    'Notifikasi surat masuk dilewati: tim tujuan belum ditentukan.',
                     [
                         'surat_masuk_id' => $suratMasuk->id,
                     ]
                 );
 
+                return;
+            }
+
+            /*
+             * Ambil ketua tim berdasarkan tim_id surat masuk.
+             * Hanya ketua tim aktif dengan nomor HP aktif.
+             */
+            $ketuaTim = DB::table('tb_tim')
+                ->join(
+                    'users',
+                    'tb_tim.ketua_id',
+                    '=',
+                    'users.id'
+                )
+                ->where('tb_tim.id', $suratMasuk->tim_id)
+                ->where('tb_tim.status', 'aktif')
+                ->where('users.role', 'ketua_tim')
+                ->where('users.status', 'aktif')
+                ->whereNotNull('users.no_hp')
+                ->where('users.no_hp', '<>', '')
+                ->select([
+                    'tb_tim.nama_tim',
+                    'tb_tim.ketua_id',
+                    'users.name as nama_ketua',
+                    'users.no_hp',
+                ])
+                ->first();
+
+            if (!$ketuaTim) {
+                Log::info(
+                    'Notifikasi surat masuk dilewati: ketua tim tidak memiliki nomor HP aktif.',
+                    [
+                        'surat_masuk_id' => $suratMasuk->id,
+                        'tim_id' => $suratMasuk->tim_id,
+                    ]
+                );
+
+                return;
+            }
+
+            $nomorHp = trim($ketuaTim->no_hp);
+
+            if ($nomorHp === '') {
                 return;
             }
 
@@ -197,17 +296,22 @@ class SuratMasukController extends Controller
                 'Asal surat: ' . $suratMasuk->asal_surat,
                 'Perihal: ' . $suratMasuk->perihal,
                 '',
+                'Tim tujuan: ' . $ketuaTim->nama_tim,
+                'Ketua tim: ' . $ketuaTim->nama_ketua,
+                '',
+                'Anda merupakan ketua tim yang ditunjuk untuk menangani surat ini.',
+                '',
                 'Silakan periksa surat masuk melalui aplikasi BPSKp.',
             ]);
 
-            // Satu request Fonnte dengan daftar nomor yang unik.
+            // Satu request Fonnte untuk ketua tim tujuan.
             $response = Http::withHeaders([
                 'Authorization' => $token,
             ])
                 ->asForm()
                 ->timeout(15)
                 ->post($url, [
-                    'target' => $nomorHp->implode(','),
+                    'target' => $nomorHp,
                     'message' => $pesan,
                 ]);
 
@@ -216,6 +320,7 @@ class SuratMasukController extends Controller
                     'Fonnte gagal mengirim notifikasi surat masuk.',
                     [
                         'surat_masuk_id' => $suratMasuk->id,
+                        'tim_id' => $suratMasuk->tim_id,
                         'http_status' => $response->status(),
                         'response' => $response->body(),
                     ]
@@ -235,6 +340,7 @@ class SuratMasukController extends Controller
                     'Fonnte menolak pengiriman notifikasi surat masuk.',
                     [
                         'surat_masuk_id' => $suratMasuk->id,
+                        'tim_id' => $suratMasuk->tim_id,
                         'response' => $hasil,
                     ]
                 );
@@ -243,12 +349,15 @@ class SuratMasukController extends Controller
             }
 
             Log::info(
-                'Permintaan notifikasi surat masuk telah dikirim ke Fonnte.',
+                'Notifikasi surat masuk telah dikirim kepada ketua tim tujuan.',
                 [
                     'surat_masuk_id' => $suratMasuk->id,
-                    'jumlah_nomor_tujuan' => $nomorHp->count(),
+                    'tim_id' => $suratMasuk->tim_id,
+                    'nama_tim' => $ketuaTim->nama_tim,
+                    'nama_ketua' => $ketuaTim->nama_ketua,
                 ]
             );
+
         } catch (Throwable $e) {
             // Kegagalan WhatsApp tidak membatalkan penyimpanan surat.
             Log::error(
@@ -263,7 +372,9 @@ class SuratMasukController extends Controller
 
     public function show(string $id): JsonResponse
     {
-        $suratMasuk = SuratMasuk::with('dicatatOleh')->find($id);
+        $suratMasuk = $this->querySuratMasuk()
+            ->where('tb_surat_masuk.id', $id)
+            ->first();
 
         if (!$suratMasuk) {
             return response()->json([
@@ -294,7 +405,8 @@ class SuratMasukController extends Controller
             'nomor_surat' => [
                 'sometimes',
                 'string',
-                Rule::unique('tb_surat_masuk', 'nomor_surat')->ignore($id),
+                Rule::unique('tb_surat_masuk', 'nomor_surat')
+                    ->ignore($id),
             ],
 
             'tanggal_surat' => [
@@ -342,6 +454,14 @@ class SuratMasukController extends Controller
                 'string',
             ],
 
+            // Tim tujuan dapat diubah saat edit.
+            'tim_id' => [
+                'sometimes',
+                'nullable',
+                Rule::exists('tb_tim', 'id')
+                    ->where('status', 'aktif'),
+            ],
+
             'status' => [
                 'sometimes',
                 Rule::in([
@@ -375,7 +495,10 @@ class SuratMasukController extends Controller
 
         $suratMasuk->update($validated);
 
-        $suratMasuk->load('dicatatOleh');
+        // Ambil ulang data beserta tim dan ketua tim.
+        $suratMasuk = $this->querySuratMasuk()
+            ->where('tb_surat_masuk.id', $id)
+            ->first();
 
         return response()->json([
             'status' => 'success',

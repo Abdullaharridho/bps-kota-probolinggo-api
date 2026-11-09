@@ -39,6 +39,12 @@ return new class extends Migration
                 ->constrained('users')
                 ->restrictOnDelete();
 
+            // Tim tujuan surat masuk
+            $table->foreignId('tim_id')
+                ->nullable()
+                ->constrained('tb_tim')
+                ->nullOnDelete();
+
             $table->timestamps();
 
             $table->index('tanggal_acara');

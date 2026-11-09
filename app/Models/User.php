@@ -18,12 +18,22 @@ class User extends Authenticatable
         'name',
         'username',
         'password',
+        'jenis_kelamin',
+        'id_jabatan',
         'role',
+        'nip',
+        'no_hp',
+        'golongan',
+        'status',
     ];
+
+    /**
+     * Relasi kredensial biometrik.
+     */
     public function biometricCredentials()
-{
-    return $this->hasMany(BiometricCredential::class);
-}
+    {
+        return $this->hasMany(BiometricCredential::class);
+    }
 
     /**
      * Kolom yang disembunyikan ketika model diubah menjadi JSON.
@@ -32,7 +42,6 @@ class User extends Authenticatable
         'password',
         'remember_token',
     ];
-    
 
     /**
      * Casting attribute.
@@ -40,10 +49,7 @@ class User extends Authenticatable
     protected function casts(): array
     {
         return [
-            'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
     }
-    
-    
 }

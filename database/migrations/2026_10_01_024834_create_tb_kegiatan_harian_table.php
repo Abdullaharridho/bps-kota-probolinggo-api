@@ -20,6 +20,7 @@ return new class extends Migration
             $table->string('nama_kegiatan', 255);
             $table->time('jam_mulai');
             $table->time('jam_selesai');
+            
 
             $table->timestamps();
 

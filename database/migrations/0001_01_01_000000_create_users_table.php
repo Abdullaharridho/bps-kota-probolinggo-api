@@ -1,3 +1,4 @@
+
 <?php
 
 use Illuminate\Database\Migrations\Migration;
@@ -6,41 +7,68 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
-       Schema::create('users', function (Blueprint $table) {
-    $table->id();
+        Schema::create('users', function (Blueprint $table) {
+            $table->id();
 
-    $table->string('name');
+            $table->string('name');
+            $table->string('username')->unique();
+            $table->string('password');
 
-    $table->string('username')->unique();
+            $table->enum('jenis_kelamin', [
+                'laki-laki',
+                'perempuan'
+            ])->nullable();
 
-    $table->timestamp('email_verified_at')->nullable();
+            // Relasi ke tabel jabatans
+            $table->foreignId('id_jabatan')
+                ->nullable()
+                ->constrained('jabatans')
+                ->nullOnDelete();
 
-    $table->string('password');
+            $table->enum('role', [
+                'super_admin',
+                'pimpinan',
+                'operator',
+                'ketua_tim',
+                'pegawai',
+                'mitra'
+            ])->default('pegawai');
 
-    $table->enum('role', [
-        'super_admin',
-        'pimpinan',
-        'operator',
-        'ketua_tim',
-        'pegawai'
-    ])->default('pegawai');
+            $table->string('nip', 30)->nullable()->unique();
+            $table->string('no_hp', 20)->nullable();
 
-    $table->string('no_hp', 20)->nullable();
+            // Golongan PNS
+            $table->enum('golongan', [
+                'I/a',
+                'I/b',
+                'I/c',
+                'I/d',
+                'II/a',
+                'II/b',
+                'II/c',
+                'II/d',
+                'III/a',
+                'III/b',
+                'III/c',
+                'III/d',
+                'IV/a',
+                'IV/b',
+                'IV/c',
+                'IV/d',
+                'IV/e'
+            ])->nullable();
 
-    $table->enum('status', [
-        'aktif',
-        'nonaktif'
-    ])->default('aktif');
+            // Status akun tetap dipertahankan
+            $table->enum('status', [
+                'aktif',
+                'nonaktif'
+            ])->default('aktif');
 
-    $table->rememberToken();
-
-    $table->timestamps();
-});
+            $table->rememberToken();
+            $table->timestamps();
+        });
 
         Schema::create('password_reset_tokens', function (Blueprint $table) {
             $table->string('email')->primary();
@@ -58,13 +86,10 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
-        Schema::dropIfExists('users');
-        Schema::dropIfExists('password_reset_tokens');
         Schema::dropIfExists('sessions');
+        Schema::dropIfExists('password_reset_tokens');
+        Schema::dropIfExists('users');
     }
 };

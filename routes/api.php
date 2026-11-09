@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\PenugasanController;
 use App\Http\Controllers\Api\TimController;
 use App\Http\Controllers\Api\RekomendasiPenugasanController;
 use App\Http\Controllers\Api\LaporanKegiatanController;
+use App\Http\Controllers\api\MasterWilayahController;
 use App\Http\Controllers\Api\PemesananRuanganController;
 use App\Http\Controllers\Api\RuanganController;
 
@@ -20,7 +21,69 @@ Route::post('/biometric/login', [AuthController::class, 'biometricLogin']);
 Route::post('/activity-log', [ActivityLogController::class, 'store']);
 Route::get('/activity-statistics', [ActivityLogController::class, 'statistics']);
 Route::post('/fonnte/send', [TimController::class, 'send']);
+Route::prefix('master-wilayah')
+    ->name('master-wilayah.')
+    ->group(function () {
 
+        // =========================================
+        // GET PUBLIK — TANPA LOGIN
+        // =========================================
+
+        // Daftar kecamatan, kelurahan, atau RT/RW
+        Route::get('/{level}', [
+            MasterWilayahController::class,
+            'index',
+        ])
+            ->whereIn('level', ['kecamatan', 'kelurahan', 'rtrw'])
+            ->name('index');
+
+        // Detail satu wilayah
+        Route::get('/{level}/{id}', [
+            MasterWilayahController::class,
+            'show',
+        ])
+            ->whereIn('level', ['kecamatan', 'kelurahan', 'rtrw'])
+            ->whereNumber('id')
+            ->name('show');
+
+        // =========================================
+        // CRUD — LOGIN SUPER ADMIN WAJIB
+        // =========================================
+
+        Route::middleware('auth:sanctum','role:super_admin')->group(function () {
+
+            Route::post('/{level}', [
+                MasterWilayahController::class,
+                'store',
+            ])
+                ->whereIn('level', ['kecamatan', 'kelurahan', 'rtrw'])
+                ->name('store');
+
+            Route::put('/{level}/{id}', [
+                MasterWilayahController::class,
+                'update',
+            ])
+                ->whereIn('level', ['kecamatan', 'kelurahan', 'rtrw'])
+                ->whereNumber('id')
+                ->name('update');
+
+            Route::patch('/{level}/{id}', [
+                MasterWilayahController::class,
+                'update',
+            ])
+                ->whereIn('level', ['kecamatan', 'kelurahan', 'rtrw'])
+                ->whereNumber('id')
+                ->name('patch');
+
+            Route::delete('/{level}/{id}', [
+                MasterWilayahController::class,
+                'destroy',
+            ])
+                ->whereIn('level', ['kecamatan', 'kelurahan', 'rtrw'])
+                ->whereNumber('id')
+                ->name('destroy');
+        });
+    });
 // Rute Wajib Login
 Route::middleware('auth:sanctum')->group(function () {
 
@@ -76,6 +139,7 @@ Route::middleware([
 
     // Manajemen User & Statistik (Khusus Super Admin)
     Route::middleware('role:super_admin')->group(function () {
+        Route::get('/jabatan', [SuperAdminController::class, 'getJabatan']);
         Route::get('/users', [SuperAdminController::class, 'index']);
         Route::post('/users', [SuperAdminController::class, 'store']);
         Route::get('/users/{user}', [SuperAdminController::class, 'show']);
@@ -107,7 +171,7 @@ Route::middleware([
     });
 
     // Modul Penugasan, Kolaborasi, dan Tim (Akses: Super Admin, Pimpinan, User)
-    Route::middleware('role:super_admin,pimpinan,pegawai,ketua_tim')->group(function () {
+    Route::middleware('role:super_admin,pimpinan,pegawai,ketua_tim,operator')->group(function () {
 
         // Penugasan
         Route::get(
@@ -178,4 +242,5 @@ Route::middleware(['auth:sanctum', 'role:operator,super_admin'])->group(function
     Route::patch('/pemesanan-ruangan/{id}/batal', [PemesananRuanganController::class, 'batal']);
     Route::delete('/pemesanan-ruangan/{id}', [PemesananRuanganController::class, 'destroy']);
 });
+
 
