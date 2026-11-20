@@ -3,770 +3,934 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Validator;
 use Throwable;
 
 class PenugasanController extends Controller
 {
     /**
-     * Daftar penugasan.
+     * ======================================================
+     * DAFTAR PENUGASAN
+     * ======================================================
      */
     public function index(Request $request)
     {
-        $user = $request->user();
+        try {
+            $user = $request->user();
+            $role = $user->role ?? '';
 
-        $query = DB::table('tb_penugasan')
-            ->join(
-                'tb_surat_masuk',
-                'tb_penugasan.surat_masuk_id',
-                '=',
-                'tb_surat_masuk.id'
-            )
-            ->join(
-                'users as pengirim',
-                'tb_penugasan.ditugaskan_oleh',
-                '=',
-                'pengirim.id'
-            )
-            ->join(
-                'users as penerima',
-                'tb_penugasan.ditugaskan_kepada',
-                '=',
-                'penerima.id'
-            )
-            ->select(
-                'tb_penugasan.*',
-                'tb_surat_masuk.nomor_surat',
-                'tb_surat_masuk.perihal',
-                'tb_surat_masuk.tanggal_acara',
-                'tb_surat_masuk.waktu_mulai',
-                'tb_surat_masuk.waktu_selesai',
-                'pengirim.name as nama_pengirim',
-                'tb_surat_masuk.lokasi',
-                'penerima.name as nama_penerima'
-            )
-            ->orderByDesc('tb_penugasan.created_at')
-            ->orderByDesc('tb_penugasan.id');
+            $query = DB::table('tb_penugasan as p')
+                ->join('tb_kegiatan as k', 'k.id', '=', 'p.kegiatan_id')
+                ->join('tb_tim as t', 't.id', '=', 'k.tim_id')
+                ->join('users as penerima', 'penerima.id', '=', 'p.ditugaskan_kepada')
+                ->join('users as pemberi', 'pemberi.id', '=', 'p.ditugaskan_oleh')
+                ->select(
+                    'p.id',
+                    'p.kegiatan_id',
+                    'p.ditugaskan_oleh',
+                    'p.ditugaskan_kepada',
+                    'p.status',
+                    'p.catatan_penugasan',
+                    'p.waktu_penugasan',
+                    'p.created_at',
+                    'p.updated_at',
 
-        if (!in_array($user->role, ['super_admin', 'pimpinan'])) {
-            $query->where(function ($q) use ($user) {
-                $q->where(
-                    'tb_penugasan.ditugaskan_kepada',
-                    $user->id
-                )->orWhere(
-                    'tb_penugasan.ditugaskan_oleh',
-                    $user->id
+                    'k.nama_kegiatan',
+                    'k.uraian_kegiatan',
+                    'k.lokasi',
+                    'k.tanggal_mulai',
+                    'k.tanggal_selesai',
+                    'k.volume_jam',
+                    'k.jam_mulai',
+                    'k.jam_selesai',
+                    'k.status as status_kegiatan',
+
+                    't.nama_tim',
+
+                    'penerima.name as nama_pegawai',
+                    'pemberi.name as nama_pemberi_tugas'
                 );
-            });
-        }
 
-        if ($request->filled('search')) {
-            $search = $request->search;
+            if ($role === 'ketua_tim') {
+                $query->where('t.ketua_id', $user->id);
 
-            $query->where(function ($q) use ($search) {
-                $q->where(
-                    'tb_surat_masuk.perihal',
-                    'like',
-                    "%{$search}%"
-                )->orWhere(
-                    'tb_surat_masuk.nomor_surat',
-                    'like',
-                    "%{$search}%"
-                )->orWhere(
-                    'penerima.name',
-                    'like',
-                    "%{$search}%"
-                );
-            });
-        }
+            } elseif ($role === 'pegawai') {
+                $query->where('p.ditugaskan_kepada', $user->id);
 
-        if ($request->filled('status')) {
-            $query->where(
-                'tb_penugasan.status',
-                $request->status
-            );
-        }
+            } elseif (!in_array($role, [
+                'super_admin',
+                'pimpinan',
+                'operator'
+            ], true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Anda tidak memiliki akses untuk melihat penugasan.'
+                ], 403);
+            }
 
-        return response()->json([
-            'success' => true,
-            'data' => $query->get(),
-        ]);
-    }
+            if ($request->filled('kegiatan_id')) {
+                $query->where('p.kegiatan_id', $request->kegiatan_id);
+            }
 
-    /**
-     * Detail satu penugasan.
-     */
-    public function show(string $id)
-    {
-        $penugasan = DB::table('tb_penugasan')
-            ->join(
-                'tb_surat_masuk',
-                'tb_penugasan.surat_masuk_id',
-                '=',
-                'tb_surat_masuk.id'
-            )
-            ->join(
-                'users as pengirim',
-                'tb_penugasan.ditugaskan_oleh',
-                '=',
-                'pengirim.id'
-            )
-            ->join(
-                'users as penerima',
-                'tb_penugasan.ditugaskan_kepada',
-                '=',
-                'penerima.id'
-            )
-            ->select(
-                'tb_penugasan.*',
-                'tb_surat_masuk.nomor_surat',
-                'tb_surat_masuk.perihal',
-                'tb_surat_masuk.tanggal_acara',
-                'tb_surat_masuk.waktu_mulai',
-                'tb_surat_masuk.waktu_selesai',
-                'pengirim.name as nama_pengirim',
-                'tb_surat_masuk.lokasi',
-                'penerima.name as nama_penerima'
-            )
-            ->where('tb_penugasan.id', $id)
-            ->first();
+            if ($request->filled('status')) {
+                $query->where('p.status', $request->status);
+            }
 
-        if (!$penugasan) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Data penugasan tidak ditemukan.',
-            ], 404);
-        }
+            if ($request->filled('search')) {
+                $search = $request->search;
 
-        return response()->json([
-            'success' => true,
-            'data' => $penugasan,
-        ]);
-    }
+                $query->where(function ($q) use ($search) {
+                    $q->where('k.nama_kegiatan', 'like', "%{$search}%")
+                        ->orWhere('k.lokasi', 'like', "%{$search}%")
+                        ->orWhere('t.nama_tim', 'like', "%{$search}%")
+                        ->orWhere('penerima.name', 'like', "%{$search}%");
+                });
+            }
 
-    /**
-     * Mengambil ID pegawai yang memiliki kegiatan harian
-     * bentrok dengan jadwal acara surat masuk.
-     *
-     * Digunakan Android untuk menyaring pilihan penerima.
-     */
-    public function penerimaBentrok(Request $request): JsonResponse
-    {
-        $validated = $request->validate([
-            'surat_masuk_id' => [
-                'required',
-                'integer',
-                'exists:tb_surat_masuk,id',
-            ],
-        ]);
+            $data = $query
+                ->orderBy('p.created_at', 'desc')
+                ->get();
 
-        $surat = DB::table('tb_surat_masuk')
-            ->where('id', $validated['surat_masuk_id'])
-            ->first();
-
-        if (
-            !$surat ||
-            empty($surat->tanggal_acara) ||
-            empty($surat->waktu_mulai) ||
-            empty($surat->waktu_selesai)
-        ) {
             return response()->json([
                 'success' => true,
-                'message' => 'Jadwal acara belum lengkap.',
-                'data' => [
-                    'user_ids' => [],
+                'message' => 'Daftar penugasan berhasil diambil.',
+                'data' => $data
+            ], 200);
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat mengambil data penugasan.'
+            ], 500);
+        }
+    }
+
+
+    /**
+     * ======================================================
+     * DAFTAR PEGAWAI YANG TERSEDIA
+     * ======================================================
+     *
+     * Digunakan untuk mengisi pilihan pegawai ketika
+     * Ketua Tim membuat atau mengubah penugasan.
+     *
+     * Parameter:
+     * - kegiatan_id
+     *
+     * Pegawai yang sudah ditugaskan pada kegiatan yang sama
+     * atau memiliki jadwal bentrok tidak akan ditampilkan.
+     */
+    public function pegawaiTersedia(Request $request)
+    {
+        try {
+            $user = $request->user();
+
+            if (($user->role ?? '') !== 'ketua_tim') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Hanya Ketua Tim yang dapat melihat daftar pegawai tersedia.'
+                ], 403);
+            }
+
+            $validator = Validator::make(
+                $request->all(),
+                [
+                    'kegiatan_id' => [
+                        'required',
+                        'integer',
+                        'exists:tb_kegiatan,id'
+                    ]
                 ],
-            ]);
+                [
+                    'kegiatan_id.required' => 'Kegiatan wajib dipilih.',
+                    'kegiatan_id.integer' => 'ID kegiatan tidak valid.',
+                    'kegiatan_id.exists' => 'Kegiatan tidak ditemukan.'
+                ]
+            );
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Data tidak valid.',
+                    'errors' => $validator->errors()
+                ], 422);
+            }
+
+            $kegiatan = DB::table('tb_kegiatan')
+                ->where('id', $request->kegiatan_id)
+                ->first();
+
+            if (!$kegiatan) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Kegiatan tidak ditemukan.'
+                ], 404);
+            }
+
+            $tim = DB::table('tb_tim')
+                ->where('id', $kegiatan->tim_id)
+                ->first();
+
+            if (!$tim || (int) $tim->ketua_id !== (int) $user->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Anda hanya dapat memilih pegawai dari kegiatan tim yang Anda pimpin.'
+                ], 403);
+            }
+
+            $anggotaTim = DB::table('tb_anggota_tim as a')
+                ->join('users as u', 'u.id', '=', 'a.pegawai_id')
+                ->where('a.tim_id', $kegiatan->tim_id)
+                ->select(
+                    'u.id',
+                    'u.name'
+                )
+                ->orderBy('u.name')
+                ->get();
+
+            $pegawaiTersedia = $anggotaTim->filter(function ($pegawai) use ($kegiatan) {
+
+                // Jangan tampilkan pegawai yang sudah ditugaskan
+                // pada kegiatan yang sedang dipilih.
+                if ($this->pegawaiSudahDitugaskanUntukKegiatan(
+                    $pegawai->id,
+                    $kegiatan->id
+                )) {
+                    return false;
+                }
+
+                // Jangan tampilkan pegawai yang jadwalnya bentrok.
+                return !$this->pegawaiMemilikiBentrok(
+                    $pegawai->id,
+                    $kegiatan
+                );
+
+            })->values();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Daftar pegawai tersedia berhasil diambil.',
+                'data' => $pegawaiTersedia
+            ], 200);
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat mengambil daftar pegawai tersedia.'
+            ], 500);
+        }
+    }
+
+
+    /**
+     * ======================================================
+     * DETAIL PENUGASAN
+     * ======================================================
+     */
+    public function show(Request $request, $id)
+    {
+        try {
+            $user = $request->user();
+
+            $penugasan = $this->getDetailPenugasan($id);
+
+            if (!$penugasan) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Data penugasan tidak ditemukan.'
+                ], 404);
+            }
+
+            if (!$this->bolehMelihatPenugasan($user, $penugasan)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Anda tidak memiliki akses untuk melihat penugasan ini.'
+                ], 403);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Detail penugasan berhasil diambil.',
+                'data' => $penugasan
+            ], 200);
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat mengambil detail penugasan.'
+            ], 500);
+        }
+    }
+
+
+    /**
+     * ======================================================
+     * TAMBAH PENUGASAN
+     * ======================================================
+     */
+    public function store(Request $request)
+    {
+        $user = $request->user();
+
+        if (($user->role ?? '') !== 'ketua_tim') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya Ketua Tim yang dapat membuat penugasan.'
+            ], 403);
         }
 
-        $userIdsBentrok = DB::table('tb_kegiatan_harian')
-            ->whereDate('tanggal', $surat->tanggal_acara)
-            ->where('jam_mulai', '<', $surat->waktu_selesai)
-            ->where('jam_selesai', '>', $surat->waktu_mulai)
-            ->distinct()
-            ->pluck('user_id')
-            ->map(fn($id) => (int) $id)
-            ->values();
+        $validator = Validator::make(
+            $request->all(),
+            [
+                'kegiatan_id' => [
+                    'required',
+                    'integer',
+                    'exists:tb_kegiatan,id'
+                ],
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Daftar jadwal bentrok berhasil diambil.',
-            'data' => [
-                'user_ids' => $userIdsBentrok,
+                'ditugaskan_kepada' => [
+                    'required',
+                    'integer',
+                    'exists:users,id'
+                ],
+
+                'catatan_penugasan' => [
+                    'nullable',
+                    'string'
+                ]
             ],
-        ]);
-    }
+            [
+                'kegiatan_id.required' => 'Kegiatan wajib dipilih.',
+                'kegiatan_id.integer' => 'ID kegiatan tidak valid.',
+                'kegiatan_id.exists' => 'Kegiatan tidak ditemukan.',
 
-    /**
-     * Membuat penugasan awal atau penugasan ulang.
-     *
-     * WhatsApp dikirim kepada pegawai yang ditunjuk
-     * setelah transaksi database berhasil.
-     */
-    public function store(Request $request): JsonResponse
-    {
-        $validated = $request->validate([
-            'surat_masuk_id' => [
-                'required',
-                'integer',
-                'exists:tb_surat_masuk,id',
-            ],
-            'ditugaskan_kepada' => [
-                'required',
-                'integer',
-                'exists:users,id',
-            ],
-            'catatan_penugasan' => [
-                'nullable',
-                'string',
-            ],
-        ]);
+                'ditugaskan_kepada.required' => 'Pegawai yang ditugaskan wajib dipilih.',
+                'ditugaskan_kepada.integer' => 'ID pegawai tidak valid.',
+                'ditugaskan_kepada.exists' => 'Pegawai tidak ditemukan.',
 
-        $user = $request->user();
-        $suratMasukId = (int) $validated['surat_masuk_id'];
-
-        $penugasan = DB::transaction(function () use (
-            $validated,
-            $user,
-            $suratMasukId
-        ) {
-            // Mengunci surat agar dua permintaan bersamaan
-            // tidak sama-sama membuat penugasan.
-            $surat = DB::table('tb_surat_masuk')
-                ->where('id', $suratMasukId)
-                ->lockForUpdate()
-                ->first();
-
-            if (!$surat) {
-                abort(404, 'Data surat masuk tidak ditemukan.');
-            }
-
-            // Ambil penugasan terakhir.
-            $penugasanTerakhir = DB::table('tb_penugasan')
-                ->where('surat_masuk_id', $suratMasukId)
-                ->orderByDesc('created_at')
-                ->orderByDesc('id')
-                ->lockForUpdate()
-                ->first();
-
-            if ($surat->status === 'baru') {
-                // Penugasan awal hanya boleh dilakukan jika
-                // surat belum memiliki riwayat penugasan.
-                if ($penugasanTerakhir) {
-                    abort(
-                        422,
-                        'Surat sudah memiliki riwayat penugasan. ' .
-                            'Periksa status penugasan terakhir.'
-                    );
-                }
-            } elseif ($surat->status === 'diproses') {
-                // Penugasan ulang hanya boleh dilakukan
-                // setelah penugasan terakhir ditolak.
-                if (!$penugasanTerakhir) {
-                    abort(
-                        422,
-                        'Riwayat penugasan tidak ditemukan.'
-                    );
-                }
-
-                if ($penugasanTerakhir->status !== 'ditolak') {
-                    abort(
-                        422,
-                        'Penugasan ulang hanya dapat dilakukan ' .
-                            'setelah penugasan terakhir ditolak.'
-                    );
-                }
-            } else {
-                abort(
-                    422,
-                    'Surat dengan status ' .
-                        ($surat->status ?? 'tidak diketahui') .
-                        ' tidak dapat ditugaskan.'
-                );
-            }
-
-            /*
-             * VALIDASI BENTROK JADWAL
-             *
-             * Dilakukan di backend supaya penugasan tetap
-             * ditolak meskipun Android belum memperbarui
-             * daftar penerima yang tersedia.
-             */
-            $penerimaId = (int) $validated['ditugaskan_kepada'];
-
-            if (
-                !empty($surat->tanggal_acara) &&
-                !empty($surat->waktu_mulai) &&
-                !empty($surat->waktu_selesai)
-            ) {
-                $jadwalBentrok = DB::table('tb_kegiatan_harian')
-                    ->where('user_id', $penerimaId)
-                    ->where('tanggal', $surat->tanggal_acara)
-                    ->where(
-                        'jam_mulai',
-                        '<',
-                        $surat->waktu_selesai
-                    )
-                    ->where(
-                        'jam_selesai',
-                        '>',
-                        $surat->waktu_mulai
-                    )
-                    ->exists();
-
-                if ($jadwalBentrok) {
-                    abort(
-                        422,
-                        'Pegawai memiliki kegiatan harian yang ' .
-                            'bentrok dengan jadwal acara surat masuk.'
-                    );
-                }
-            }
-
-            $waktuSekarang = now();
-
-            // Selalu buat record baru agar riwayat lama
-            // tetap tersimpan.
-            $penugasanId = DB::table('tb_penugasan')
-                ->insertGetId([
-                    'surat_masuk_id' => $suratMasukId,
-                    'ditugaskan_oleh' => $user->id,
-                    'ditugaskan_kepada' => $penerimaId,
-                    'catatan_penugasan' =>
-                    $validated['catatan_penugasan'] ?? null,
-                    'status' => 'menunggu_respon',
-                    'waktu_penugasan' => $waktuSekarang,
-                    'waktu_respon' => null,
-                    'catatan_respon' => null,
-                    'created_at' => $waktuSekarang,
-                    'updated_at' => $waktuSekarang,
-                ]);
-
-            // Status surat berubah menjadi diproses
-            // pada penugasan awal.
-            if ($surat->status === 'baru') {
-                DB::table('tb_surat_masuk')
-                    ->where('id', $suratMasukId)
-                    ->update([
-                        'status' => 'diproses',
-                        'updated_at' => $waktuSekarang,
-                    ]);
-            }
-
-            return DB::table('tb_penugasan')
-                ->where('id', $penugasanId)
-                ->first();
-        });
-
-        // Transaksi sudah berhasil. Kirim ke satu pegawai
-        // yang ditunjuk pada penugasan ini.
-        $this->kirimNotifikasiPenugasan(
-            (int) $penugasan->id,
-            'baru'
+                'catatan_penugasan.string' => 'Catatan penugasan harus berupa teks.'
+            ]
         );
 
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Penugasan berhasil dibuat.',
-            'data' => $penugasan,
-        ], 201);
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Data penugasan tidak valid.',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $validated = $validator->validated();
+
+            $penugasanId = DB::transaction(function () use (
+                $validated,
+                $user
+            ) {
+
+                $kegiatan = DB::table('tb_kegiatan')
+                    ->where('id', $validated['kegiatan_id'])
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$kegiatan) {
+                    throw new \RuntimeException('KEGIATAN_TIDAK_DITEMUKAN');
+                }
+
+                $tim = DB::table('tb_tim')
+                    ->where('id', $kegiatan->tim_id)
+                    ->first();
+
+                if (!$tim || (int) $tim->ketua_id !== (int) $user->id) {
+                    throw new \RuntimeException('BUKAN_KETUA_TIM');
+                }
+
+                $anggota = DB::table('tb_anggota_tim')
+                    ->where('tim_id', $kegiatan->tim_id)
+                    ->where('pegawai_id', $validated['ditugaskan_kepada'])
+                    ->exists();
+
+                if (!$anggota) {
+                    throw new \RuntimeException('BUKAN_ANGGOTA_TIM');
+                }
+
+                // Kunci baris pegawai agar pemeriksaan penugasan
+                // lebih aman ketika ada request bersamaan.
+                $pegawai = DB::table('users')
+                    ->where('id', $validated['ditugaskan_kepada'])
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$pegawai) {
+                    throw new \RuntimeException('PEGAWAI_TIDAK_DITEMUKAN');
+                }
+
+                $sudahDitugaskan = $this->pegawaiSudahDitugaskanUntukKegiatan(
+                    $pegawai->id,
+                    $kegiatan->id
+                );
+
+                if ($sudahDitugaskan) {
+                    throw new \RuntimeException('PENUGASAN_SUDAH_ADA');
+                }
+
+                // Pemeriksaan bentrok jadwal.
+                if ($this->pegawaiMemilikiBentrok(
+                    $pegawai->id,
+                    $kegiatan
+                )) {
+                    throw new \RuntimeException('JADWAL_PEGAWAI_BENTROK');
+                }
+
+                $now = now();
+
+                $id = DB::table('tb_penugasan')->insertGetId([
+                    'kegiatan_id' => $kegiatan->id,
+                    'ditugaskan_oleh' => $user->id,
+                    'ditugaskan_kepada' => $validated['ditugaskan_kepada'],
+                    'status' => 'proses',
+                    'catatan_penugasan' => $validated['catatan_penugasan'] ?? null,
+                    'waktu_penugasan' => $now,
+                    'created_at' => $now,
+                    'updated_at' => $now
+                ]);
+
+                DB::table('tb_kegiatan')
+                    ->where('id', $kegiatan->id)
+                    ->update([
+                        'status' => 'proses',
+                        'updated_at' => $now
+                    ]);
+
+                return $id;
+            });
+
+            $data = $this->getDetailPenugasan($penugasanId);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Penugasan berhasil dibuat.',
+                'data' => $data
+            ], 201);
+
+        } catch (\RuntimeException $e) {
+
+            $messages = [
+                'KEGIATAN_TIDAK_DITEMUKAN' => [
+                    'Kegiatan tidak ditemukan.',
+                    404
+                ],
+                'BUKAN_KETUA_TIM' => [
+                    'Anda hanya dapat memberikan penugasan untuk kegiatan tim yang Anda pimpin.',
+                    403
+                ],
+                'BUKAN_ANGGOTA_TIM' => [
+                    'Pegawai yang dipilih bukan anggota tim kegiatan tersebut.',
+                    422
+                ],
+                'PEGAWAI_TIDAK_DITEMUKAN' => [
+                    'Pegawai tidak ditemukan.',
+                    404
+                ],
+                'PENUGASAN_SUDAH_ADA' => [
+                    'Pegawai tersebut sudah mendapatkan penugasan untuk kegiatan ini.',
+                    409
+                ],
+                'JADWAL_PEGAWAI_BENTROK' => [
+                    'Pegawai tersebut sudah memiliki penugasan pada tanggal atau jam yang bertabrakan.',
+                    409
+                ]
+            ];
+
+            if (isset($messages[$e->getMessage()])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $messages[$e->getMessage()][0]
+                ], $messages[$e->getMessage()][1]);
+            }
+
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat membuat penugasan.'
+            ], 500);
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat membuat penugasan.'
+            ], 500);
+        }
     }
 
+
     /**
-     * Memperbarui data penugasan.
+     * ======================================================
+     * UPDATE PENUGASAN
+     * ======================================================
      */
     public function update(Request $request, $id)
     {
-        $penugasan = DB::table('tb_penugasan')
-            ->where('id', $id)
-            ->first();
+        try {
+            $user = $request->user();
 
-        if (!$penugasan) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Data penugasan tidak ditemukan.',
-            ], 404);
-        }
-
-        $validated = $request->validate([
-            'ditugaskan_kepada' => [
-                'sometimes',
-                'required',
-                'integer',
-                'exists:users,id',
-            ],
-            'catatan_penugasan' => [
-                'nullable',
-                'string',
-            ],
-        ]);
-
-        /*
-         * Endpoint update tetap mengikuti perilaku lama.
-         * Notifikasi tidak dikirim dari endpoint ini.
-         */
-        $validated['updated_at'] = now();
-
-        DB::table('tb_penugasan')
-            ->where('id', $id)
-            ->update($validated);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Data penugasan berhasil diperbarui.',
-            'data' => DB::table('tb_penugasan')
-                ->where('id', $id)
-                ->first(),
-        ]);
-    }
-
-    /**
-     * Respons pegawai terhadap penugasan.
-     *
-     * Setelah respons berhasil disimpan, WhatsApp dikirim
-     * kepada Ketua Tim yang membuat penugasan.
-     */
-    public function responPenugasan(Request $request, $id)
-    {
-        $user = $request->user();
-
-        $validated = $request->validate([
-            'status' => [
-                'required',
-                Rule::in(['diterima', 'ditolak']),
-            ],
-            'catatan_respon' => [
-                'nullable',
-                'string',
-            ],
-        ]);
-
-        $hasil = DB::transaction(function () use (
-            $id,
-            $user,
-            $validated
-        ) {
-            $penugasan = DB::table('tb_penugasan')
-                ->where('id', $id)
-                ->lockForUpdate()
+            $penugasan = DB::table('tb_penugasan as p')
+                ->join('tb_kegiatan as k', 'k.id', '=', 'p.kegiatan_id')
+                ->join('tb_tim as t', 't.id', '=', 'k.tim_id')
+                ->where('p.id', $id)
+                ->select(
+                    'p.*',
+                    'k.tim_id',
+                    'k.tanggal_mulai',
+                    'k.tanggal_selesai',
+                    'k.volume_jam',
+                    'k.jam_mulai',
+                    'k.jam_selesai',
+                    't.ketua_id'
+                )
                 ->first();
 
             if (!$penugasan) {
-                return [
-                    'http' => 404,
-                    'body' => [
-                        'success' => false,
-                        'message' => 'Data penugasan tidak ditemukan.',
-                    ],
-                ];
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Data penugasan tidak ditemukan.'
+                ], 404);
             }
 
             if (
-                (int) $penugasan->ditugaskan_kepada
-                !== (int) $user->id
+                ($user->role ?? '') !== 'ketua_tim' ||
+                (int) $penugasan->ketua_id !== (int) $user->id
             ) {
-                return [
-                    'http' => 403,
-                    'body' => [
-                        'success' => false,
-                        'message' =>
-                        'Anda tidak berhak merespons penugasan ini.',
-                    ],
-                ];
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Anda tidak memiliki akses untuk mengubah penugasan ini.'
+                ], 403);
             }
 
-            // Penugasan hanya dapat direspons satu kali.
-            if ($penugasan->status !== 'menunggu_respon') {
-                return [
-                    'http' => 422,
-                    'body' => [
-                        'success' => false,
-                        'message' =>
-                        'Penugasan sudah direspons dan ' .
-                            'tidak dapat diubah kembali.',
+            $validator = Validator::make(
+                $request->all(),
+                [
+                    'ditugaskan_kepada' => [
+                        'sometimes',
+                        'required',
+                        'integer',
+                        'exists:users,id'
                     ],
-                ];
+
+                    'catatan_penugasan' => [
+                        'sometimes',
+                        'nullable',
+                        'string'
+                    ]
+                ],
+                [
+                    'ditugaskan_kepada.required' => 'Pegawai yang ditugaskan wajib dipilih.',
+                    'ditugaskan_kepada.integer' => 'ID pegawai tidak valid.',
+                    'ditugaskan_kepada.exists' => 'Pegawai tidak ditemukan.',
+
+                    'catatan_penugasan.string' => 'Catatan penugasan harus berupa teks.'
+                ]
+            );
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Data penugasan tidak valid.',
+                    'errors' => $validator->errors()
+                ], 422);
             }
 
-            $waktuSekarang = now();
+            $validated = $validator->validated();
 
-            // Simpan respons pegawai.
+            if (empty($validated)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Tidak ada data yang diperbarui.'
+                ], 422);
+            }
+
+            if (array_key_exists('ditugaskan_kepada', $validated)) {
+
+                $memilikiLaporan = DB::table('tb_laporan_kegiatan')
+                    ->where('penugasan_id', $id)
+                    ->exists();
+
+                if ($memilikiLaporan) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Penerima penugasan tidak dapat diganti karena sudah memiliki laporan.'
+                    ], 409);
+                }
+
+                $anggota = DB::table('tb_anggota_tim')
+                    ->where('tim_id', $penugasan->tim_id)
+                    ->where('pegawai_id', $validated['ditugaskan_kepada'])
+                    ->exists();
+
+                if (!$anggota) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Pegawai yang dipilih bukan anggota tim kegiatan tersebut.'
+                    ], 422);
+                }
+
+                $duplikat = DB::table('tb_penugasan')
+                    ->where('kegiatan_id', $penugasan->kegiatan_id)
+                    ->where('ditugaskan_kepada', $validated['ditugaskan_kepada'])
+                    ->where('id', '!=', $id)
+                    ->exists();
+
+                if ($duplikat) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Pegawai tersebut sudah mendapatkan penugasan untuk kegiatan ini.'
+                    ], 409);
+                }
+
+                $pegawai = DB::table('users')
+                    ->where('id', $validated['ditugaskan_kepada'])
+                    ->first();
+
+                if (!$pegawai) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Pegawai tidak ditemukan.'
+                    ], 404);
+                }
+
+                // Bentuk kegiatan yang sedang diedit.
+                $kegiatanSaatIni = (object) [
+                    'id' => $penugasan->kegiatan_id,
+                    'tanggal_mulai' => $penugasan->tanggal_mulai,
+                    'tanggal_selesai' => $penugasan->tanggal_selesai,
+                    'volume_jam' => $penugasan->volume_jam,
+                    'jam_mulai' => $penugasan->jam_mulai,
+                    'jam_selesai' => $penugasan->jam_selesai
+                ];
+
+                // Abaikan penugasan yang sedang diedit.
+                if ($this->pegawaiMemilikiBentrok(
+                    $pegawai->id,
+                    $kegiatanSaatIni,
+                    $id
+                )) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Pegawai tersebut sudah memiliki penugasan pada tanggal atau jam yang bertabrakan.'
+                    ], 409);
+                }
+            }
+
+            $update = [];
+
+            if (array_key_exists('ditugaskan_kepada', $validated)) {
+                $update['ditugaskan_kepada'] = $validated['ditugaskan_kepada'];
+            }
+
+            if (array_key_exists('catatan_penugasan', $validated)) {
+                $update['catatan_penugasan'] = $validated['catatan_penugasan'];
+            }
+
+            $update['updated_at'] = now();
+
             DB::table('tb_penugasan')
                 ->where('id', $id)
-                ->update([
-                    'status' => $validated['status'],
-                    'catatan_respon' =>
-                    $validated['catatan_respon'] ?? null,
-                    'waktu_respon' => $waktuSekarang,
-                    'updated_at' => $waktuSekarang,
-                ]);
+                ->update($update);
 
-            // Jika diterima, ubah status surat menjadi diproses.
-            if ($validated['status'] === 'diterima') {
-                DB::table('tb_surat_masuk')
-                    ->where('id', $penugasan->surat_masuk_id)
-                    ->update([
-                        'status' => 'diproses',
-                        'updated_at' => $waktuSekarang,
-                    ]);
-            }
+            return response()->json([
+                'success' => true,
+                'message' => 'Penugasan berhasil diperbarui.',
+                'data' => $this->getDetailPenugasan($id)
+            ], 200);
 
-            // Jika ditolak, status surat tidak diubah.
+        } catch (Throwable $e) {
+            report($e);
 
-            return [
-                'http' => 200,
-                'body' => [
-                    'success' => true,
-                    'message' => $validated['status'] === 'diterima'
-                        ? 'Penugasan diterima. Status surat menjadi diproses.'
-                        : 'Penugasan berhasil ditolak.',
-                    'data' => DB::table('tb_penugasan')
-                        ->where('id', $id)
-                        ->first(),
-                ],
-            ];
-        });
-
-        // Kirim notifikasi hanya jika transaksi dan respons sukses.
-        // Penerimanya adalah pembuat penugasan, bukan semua Ketua Tim.
-        if (
-            $hasil['http'] === 200 &&
-            $hasil['body']['success'] === true
-        ) {
-            $this->kirimNotifikasiPenugasan(
-                (int) $id,
-                $validated['status']
-            );
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat memperbarui penugasan.'
+            ], 500);
         }
-
-        return response()->json(
-            $hasil['body'],
-            $hasil['http']
-        );
     }
 
+
     /**
-     * Menghapus penugasan.
+     * ======================================================
+     * HAPUS PENUGASAN
+     * ======================================================
      */
     public function destroy(Request $request, $id)
     {
-        $penugasan = DB::table('tb_penugasan')
-            ->where('id', $id)
-            ->first();
-
-        if (!$penugasan) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Data penugasan tidak ditemukan.',
-            ], 404);
-        }
-
-        DB::table('tb_penugasan')
-            ->where('id', $id)
-            ->delete();
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Penugasan berhasil dihapus.',
-        ]);
-    }
-
-    /**
-     * Mengirim notifikasi WhatsApp melalui Fonnte.
-     *
-     * $jenis:
-     * - baru      : dikirim ke pegawai penerima penugasan
-     * - diterima  : dikirim ke pembuat penugasan
-     * - ditolak   : dikirim ke pembuat penugasan
-     *
-     * Kegagalan WhatsApp tidak membatalkan transaksi penugasan.
-     */
-    private function kirimNotifikasiPenugasan(
-        int $penugasanId,
-        string $jenis
-    ): void {
         try {
-            $penugasan = DB::table('tb_penugasan')
-                ->join(
-                    'tb_surat_masuk',
-                    'tb_penugasan.surat_masuk_id',
-                    '=',
-                    'tb_surat_masuk.id'
-                )
-                ->join(
-                    'users as pengirim',
-                    'tb_penugasan.ditugaskan_oleh',
-                    '=',
-                    'pengirim.id'
-                )
-                ->join(
-                    'users as penerima',
-                    'tb_penugasan.ditugaskan_kepada',
-                    '=',
-                    'penerima.id'
-                )
+            $user = $request->user();
+
+            $penugasan = DB::table('tb_penugasan as p')
+                ->join('tb_kegiatan as k', 'k.id', '=', 'p.kegiatan_id')
+                ->join('tb_tim as t', 't.id', '=', 'k.tim_id')
+                ->where('p.id', $id)
                 ->select(
-                    'tb_penugasan.id',
-                    'tb_penugasan.status',
-                    'tb_penugasan.catatan_penugasan',
-                    'tb_penugasan.catatan_respon',
-                    'tb_surat_masuk.nomor_surat',
-                    'tb_surat_masuk.perihal',
-                    'pengirim.name as nama_pengirim',
-                    'pengirim.no_hp as hp_pengirim',
-                    'penerima.name as nama_penerima',
-                    'penerima.no_hp as hp_penerima'
+                    'p.id',
+                    'p.kegiatan_id',
+                    't.ketua_id'
                 )
-                ->where('tb_penugasan.id', $penugasanId)
                 ->first();
 
             if (!$penugasan) {
-                Log::warning(
-                    'Notifikasi penugasan gagal: data tidak ditemukan.',
-                    ['penugasan_id' => $penugasanId]
-                );
-
-                return;
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Data penugasan tidak ditemukan.'
+                ], 404);
             }
-
-            // Tentukan satu nomor tujuan berdasarkan jenis kejadian.
-            if ($jenis === 'baru') {
-                $nomorTujuan = $penugasan->hp_penerima;
-
-                $pesan =
-                    "PENUGASAN SURAT MASUK\n\n" .
-                    "Yth. {$penugasan->nama_penerima},\n" .
-                    "Anda menerima penugasan surat masuk baru.\n\n" .
-                    "Nomor surat: {$penugasan->nomor_surat}\n" .
-                    "Perihal: {$penugasan->perihal}\n" .
-                    "Ditugaskan oleh: {$penugasan->nama_pengirim}\n" .
-                    "Status: Menunggu respons";
-
-                if (!empty($penugasan->catatan_penugasan)) {
-                    $pesan .=
-                        "\nCatatan penugasan: " .
-                        $penugasan->catatan_penugasan;
-                }
-            } elseif (in_array($jenis, ['diterima', 'ditolak'])) {
-                $nomorTujuan = $penugasan->hp_pengirim;
-
-                $statusRespons = $jenis === 'diterima'
-                    ? 'DITERIMA'
-                    : 'DITOLAK';
-
-                $pesan =
-                    "PEMBARUAN RESPONS PENUGASAN\n\n" .
-                    "Yth. {$penugasan->nama_pengirim},\n" .
-                    "Pegawai yang Anda tugaskan telah " .
-                    strtolower($statusRespons) . " penugasan.\n\n" .
-                    "Nomor surat: {$penugasan->nomor_surat}\n" .
-                    "Perihal: {$penugasan->perihal}\n" .
-                    "Pegawai: {$penugasan->nama_penerima}\n" .
-                    "Respons: {$statusRespons}";
-
-                if (!empty($penugasan->catatan_respon)) {
-                    $pesan .=
-                        "\nCatatan respons: " .
-                        $penugasan->catatan_respon;
-                }
-            } else {
-                Log::warning(
-                    'Jenis notifikasi penugasan tidak dikenal.',
-                    [
-                        'penugasan_id' => $penugasanId,
-                        'jenis' => $jenis,
-                    ]
-                );
-
-                return;
-            }
-
-            if (empty($nomorTujuan)) {
-                Log::warning(
-                    'Notifikasi penugasan tidak dikirim: nomor WhatsApp kosong.',
-                    [
-                        'penugasan_id' => $penugasanId,
-                        'jenis' => $jenis,
-                    ]
-                );
-
-                return;
-            }
-
-            $token = config('services.fonnte.token');
-            $url = config(
-                'services.fonnte.url',
-                'https://api.fonnte.com/send'
-            );
-
-            if (empty($token) || empty($url)) {
-                Log::error(
-                    'Notifikasi penugasan gagal: konfigurasi Fonnte belum lengkap.',
-                    [
-                        'penugasan_id' => $penugasanId,
-                        'jenis' => $jenis,
-                    ]
-                );
-
-                return;
-            }
-
-            // Satu request dengan satu nomor tujuan.
-            $response = Http::withHeaders([
-                'Authorization' => $token,
-            ])
-                ->asForm()
-                ->timeout(15)
-                ->post($url, [
-                    'target' => $nomorTujuan,
-                    'message' => $pesan,
-                ]);
-
-            $hasilFonnte = $response->json();
 
             if (
-                !$response->successful() ||
-                (
-                    is_array($hasilFonnte) &&
-                    array_key_exists('status', $hasilFonnte) &&
-                    $hasilFonnte['status'] === false
-                )
+                ($user->role ?? '') !== 'ketua_tim' ||
+                (int) $penugasan->ketua_id !== (int) $user->id
             ) {
-                Log::error(
-                    'Pengiriman WhatsApp penugasan gagal.',
-                    [
-                        'penugasan_id' => $penugasanId,
-                        'jenis' => $jenis,
-                        'http_status' => $response->status(),
-                        'respons_fonnte' => $hasilFonnte,
-                    ]
-                );
-
-                return;
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Anda tidak memiliki akses untuk menghapus penugasan ini.'
+                ], 403);
             }
 
-            Log::info(
-                'Permintaan notifikasi WhatsApp penugasan berhasil dikirim ke Fonnte.',
-                [
-                    'penugasan_id' => $penugasanId,
-                    'jenis' => $jenis,
-                ]
-            );
+            $memilikiLaporan = DB::table('tb_laporan_kegiatan')
+                ->where('penugasan_id', $id)
+                ->exists();
+
+            if ($memilikiLaporan) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Penugasan tidak dapat dihapus karena sudah memiliki laporan kegiatan.'
+                ], 409);
+            }
+
+            DB::transaction(function () use ($id, $penugasan) {
+
+                DB::table('tb_penugasan')
+                    ->where('id', $id)
+                    ->delete();
+
+                $sisaPenugasan = DB::table('tb_penugasan')
+                    ->where('kegiatan_id', $penugasan->kegiatan_id)
+                    ->get(['status']);
+
+                if ($sisaPenugasan->isEmpty()) {
+                    $statusKegiatan = 'baru';
+
+                } elseif ($sisaPenugasan->contains(function ($item) {
+                    return $item->status !== 'selesai';
+                })) {
+                    $statusKegiatan = 'proses';
+
+                } else {
+                    $statusKegiatan = 'selesai';
+                }
+
+                DB::table('tb_kegiatan')
+                    ->where('id', $penugasan->kegiatan_id)
+                    ->update([
+                        'status' => $statusKegiatan,
+                        'updated_at' => now()
+                    ]);
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Penugasan berhasil dihapus.'
+            ], 200);
+
         } catch (Throwable $e) {
-            // Kesalahan Fonnte tidak menggagalkan respons API penugasan.
-            Log::error(
-                'Terjadi kesalahan saat mengirim WhatsApp penugasan.',
-                [
-                    'penugasan_id' => $penugasanId,
-                    'jenis' => $jenis,
-                    'error' => $e->getMessage(),
-                ]
-            );
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat menghapus penugasan.'
+            ], 500);
         }
+    }
+
+
+    /**
+     * ======================================================
+     * CEK APAKAH PEGAWAI SUDAH DITUGASKAN PADA KEGIATAN
+     * ======================================================
+     *
+     * Pemeriksaan ini tetap berlaku untuk semua status,
+     * agar satu pegawai tidak mendapat penugasan ganda
+     * pada kegiatan yang sama.
+     */
+    private function pegawaiSudahDitugaskanUntukKegiatan(
+        $pegawaiId,
+        $kegiatanId
+    ): bool {
+        return DB::table('tb_penugasan')
+            ->where('kegiatan_id', $kegiatanId)
+            ->where('ditugaskan_kepada', $pegawaiId)
+            ->exists();
+    }
+
+
+    /**
+     * ======================================================
+     * PEMERIKSAAN BENTROK JADWAL PEGAWAI
+     * ======================================================
+     *
+     * Aturan:
+     *
+     * 1. Hanya penugasan berstatus proses yang diperiksa.
+     *
+     * 2. Jika kegiatan baru memiliki volume >= 8 jam,
+     *    setiap penugasan aktif pada tanggal beririsan
+     *    dianggap bentrok.
+     *
+     * 3. Jika kegiatan baru memiliki volume < 8 jam:
+     *    - Penugasan lama dengan volume >= 8 jam
+     *      dianggap satu hari penuh.
+     *    - Penugasan lama dengan volume < 8 jam
+     *      diperiksa berdasarkan irisan jam.
+     *
+     * 4. Jika jam tidak tersedia, pemeriksaan dilakukan
+     *    secara konservatif sebagai satu hari penuh.
+     *
+     * 5. $excludePenugasanId digunakan saat update agar
+     *    penugasan yang sedang diedit tidak menghitung
+     *    dirinya sendiri sebagai bentrok.
+     */
+    private function pegawaiMemilikiBentrok(
+        $pegawaiId,
+        $kegiatan,
+        $excludePenugasanId = null
+    ): bool {
+
+        $volumeBaru = (float) ($kegiatan->volume_jam ?? 0);
+
+        $jamBaruTidakLengkap =
+            empty($kegiatan->jam_mulai) ||
+            empty($kegiatan->jam_selesai);
+
+        $query = DB::table('tb_penugasan as p')
+            ->join('tb_kegiatan as k', 'k.id', '=', 'p.kegiatan_id')
+            ->where('p.ditugaskan_kepada', $pegawaiId)
+            ->where('p.status', 'proses')
+
+            // Tanggal kegiatan harus beririsan.
+            ->where('k.tanggal_mulai', '<=', $kegiatan->tanggal_selesai)
+            ->where('k.tanggal_selesai', '>=', $kegiatan->tanggal_mulai);
+
+        if ($excludePenugasanId !== null) {
+            $query->where('p.id', '!=', $excludePenugasanId);
+        }
+
+        // Kegiatan baru 8 jam atau lebih:
+        // setiap jadwal aktif pada tanggal yang beririsan bentrok.
+        if ($volumeBaru >= 8 || $jamBaruTidakLengkap) {
+            return $query->exists();
+        }
+
+        $query->where(function ($q) use ($kegiatan) {
+
+            // Penugasan lama 8 jam atau lebih dianggap
+            // menggunakan waktu satu hari penuh.
+            $q->where('k.volume_jam', '>=', 8)
+
+                // Data jam yang tidak lengkap dianggap penuh
+                // agar tidak terjadi penugasan yang berisiko.
+                ->orWhereNull('k.jam_mulai')
+                ->orWhereNull('k.jam_selesai')
+
+                // Jika kedua kegiatan kurang dari 8 jam,
+                // periksa irisan jam.
+                ->orWhere(function ($jam) use ($kegiatan) {
+                    $jam->where('k.volume_jam', '<', 8)
+                        ->whereNotNull('k.jam_mulai')
+                        ->whereNotNull('k.jam_selesai')
+                        ->where('k.jam_mulai', '<', $kegiatan->jam_selesai)
+                        ->where('k.jam_selesai', '>', $kegiatan->jam_mulai);
+                });
+        });
+
+        return $query->exists();
+    }
+
+
+    /**
+     * ======================================================
+     * DETAIL PENUGASAN DENGAN INFORMASI KEGIATAN DAN TIM
+     * ======================================================
+     */
+    private function getDetailPenugasan($id)
+    {
+        return DB::table('tb_penugasan as p')
+            ->join('tb_kegiatan as k', 'k.id', '=', 'p.kegiatan_id')
+            ->join('tb_tim as t', 't.id', '=', 'k.tim_id')
+            ->join('users as penerima', 'penerima.id', '=', 'p.ditugaskan_kepada')
+            ->join('users as pemberi', 'pemberi.id', '=', 'p.ditugaskan_oleh')
+            ->where('p.id', $id)
+            ->select(
+                'p.id',
+                'p.kegiatan_id',
+                'p.ditugaskan_oleh',
+                'p.ditugaskan_kepada',
+                'p.status',
+                'p.catatan_penugasan',
+                'p.waktu_penugasan',
+                'p.created_at',
+                'p.updated_at',
+
+                'k.nama_kegiatan',
+                'k.uraian_kegiatan',
+                'k.lokasi',
+                'k.tanggal_mulai',
+                'k.tanggal_selesai',
+                'k.volume_jam',
+                'k.jam_mulai',
+                'k.jam_selesai',
+                'k.status as status_kegiatan',
+
+                't.nama_tim',
+
+                'penerima.name as nama_pegawai',
+                'pemberi.name as nama_pemberi_tugas'
+            )
+            ->first();
+    }
+
+
+    /**
+     * ======================================================
+     * PEMERIKSAAN HAK AKSES DETAIL PENUGASAN
+     * ======================================================
+     */
+    private function bolehMelihatPenugasan($user, $penugasan): bool
+    {
+        $role = $user->role ?? '';
+
+        if (in_array($role, [
+            'super_admin',
+            'pimpinan',
+            'operator'
+        ], true)) {
+            return true;
+        }
+
+        if ($role === 'ketua_tim') {
+            return (int) $penugasan->ketua_id === (int) $user->id;
+        }
+
+        if ($role === 'pegawai') {
+            return (int) $penugasan->ditugaskan_kepada === (int) $user->id;
+        }
+
+        return false;
     }
 }

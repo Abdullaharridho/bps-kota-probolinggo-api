@@ -3,556 +3,813 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\GoogleDriveService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
+use Illuminate\Auth\Access\AuthorizationException;
+use Throwable;
 
 class LaporanKegiatanController extends Controller
 {
     public function index(Request $request)
     {
-        $query = DB::table('tb_laporan_kegiatan')
-            ->join('tb_penugasan', 'tb_laporan_kegiatan.penugasan_id', '=', 'tb_penugasan.id')
-            ->join('users', 'tb_laporan_kegiatan.dilaporkan_oleh', '=', 'users.id')
+        $user = $request->user();
+
+        $query = DB::table('tb_laporan_kegiatan as l')
+            ->join('tb_penugasan as p', 'p.id', '=', 'l.penugasan_id')
+            ->join('tb_kegiatan as k', 'k.id', '=', 'p.kegiatan_id')
+            ->join('users as u', 'u.id', '=', 'l.dilaporkan_oleh')
             ->select(
-                'tb_laporan_kegiatan.*',
-                'users.name as pelapor'
-            )
-            ->orderBy('tb_laporan_kegiatan.created_at', 'desc');
+                'l.id',
+                'l.penugasan_id',
+                'l.catatan',
+                'l.dilaporkan_oleh',
+                'l.tanggal_laporan',
+                'l.created_at',
+                'l.updated_at',
+                'p.ditugaskan_kepada',
+                'p.ditugaskan_oleh',
+                'p.status as status_penugasan',
+                'k.id as kegiatan_id',
+                'k.nama_kegiatan',
+                'k.lokasi',
+                'k.tanggal_mulai',
+                'k.tanggal_selesai',
+                'k.status as status_kegiatan',
+                'u.name as nama_pelapor'
+            );
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Data laporan berhasil diambil.',
-            'data' => $query->get()
-        ]);
-    }
+        $this->terapkanHakAkses($query, $user);
 
-    public function show(string $id)
-    {
-        $laporan = DB::table('tb_laporan_kegiatan')
-            ->join('users', 'tb_laporan_kegiatan.dilaporkan_oleh', '=', 'users.id')
-            ->select('tb_laporan_kegiatan.*', 'users.name as pelapor')
-            ->where('tb_laporan_kegiatan.id', $id)
-            ->first();
-
-        if (!$laporan) {
-            return response()->json(['success' => false, 'message' => 'Data tidak ditemukan.'], 404);
+        if ($request->filled('kegiatan_id')) {
+            $query->where('k.id', $request->kegiatan_id);
         }
 
-        $laporan->dokumen = DB::table('tb_dokumen_kegiatan')
-            ->where('laporan_kegiatan_id', $id)
+        if ($request->filled('penugasan_id')) {
+            $query->where('l.penugasan_id', $request->penugasan_id);
+        }
+
+        $laporan = $query
+            ->orderByDesc('l.tanggal_laporan')
             ->get();
+
+        foreach ($laporan as $item) {
+            $item->dokumen = $this->getDokumen($item->id);
+        }
 
         return response()->json([
             'success' => true,
+            'message' => 'Daftar laporan kegiatan berhasil diambil.',
             'data' => $laporan
         ]);
     }
 
-   public function store(Request $request)
-{
-    $validated = $request->validate([
-        'penugasan_id' => 'required|exists:tb_penugasan,id',
-        'ringkasan' => 'required|string',
-        'hasil_kegiatan' => 'required|string',
-        'catatan' => 'nullable|string',
+    public function show(Request $request, $id)
+    {
+        $user = $request->user();
 
-        // Maksimal 5 dokumen.
-        'dokumen' => 'required|array|max:5',
+        $query = DB::table('tb_laporan_kegiatan as l')
+            ->join('tb_penugasan as p', 'p.id', '=', 'l.penugasan_id')
+            ->join('tb_kegiatan as k', 'k.id', '=', 'p.kegiatan_id')
+            ->join('users as u', 'u.id', '=', 'l.dilaporkan_oleh')
+            ->where('l.id', $id)
+            ->select(
+                'l.*',
+                'p.ditugaskan_kepada',
+                'p.ditugaskan_oleh',
+                'p.status as status_penugasan',
+                'k.id as kegiatan_id',
+                'k.tim_id',
+                'k.nama_kegiatan',
+                'k.uraian_kegiatan',
+                'k.lokasi',
+                'k.tanggal_mulai',
+                'k.tanggal_selesai',
+                'k.volume_jam',
+                'k.jam_mulai',
+                'k.jam_selesai',
+                'k.status as status_kegiatan',
+                'u.name as nama_pelapor'
+            );
 
-        // Format file yang diizinkan, maksimal 5 MB per file.
-        'dokumen.*.file' => [
-            'required',
-            'file',
-            'mimes:jpeg,png,jpg,pdf,doc,docx',
-            'max:5120'
-        ],
+        $this->terapkanHakAkses($query, $user);
 
-        'dokumen.*.jenis_dokumen' => [
-            'required',
-            Rule::in([
-                'materi',
-                'dokumentasi',
-                'notulen',
-                'lainnya'
-            ])
-        ]
-    ]);
+        $laporan = $query->first();
 
-    $uploadedPaths = [];
-
-    DB::beginTransaction();
-
-    try {
-        // Ambil data penugasan untuk mengetahui surat masuk terkait.
-        $penugasan = DB::table('tb_penugasan')
-            ->where('id', $validated['penugasan_id'])
-            ->lockForUpdate()
-            ->first();
-
-        if (!$penugasan) {
-            DB::rollBack();
-
+        if (!$laporan) {
             return response()->json([
                 'success' => false,
-                'message' => 'Data penugasan tidak ditemukan.'
+                'message' => 'Laporan kegiatan tidak ditemukan.'
             ], 404);
         }
 
-        // Simpan laporan kegiatan.
-        $laporanId = DB::table('tb_laporan_kegiatan')
-            ->insertGetId([
-                'penugasan_id' => $validated['penugasan_id'],
-                'ringkasan' => $validated['ringkasan'],
-                'hasil_kegiatan' => $validated['hasil_kegiatan'],
-                'catatan' => $validated['catatan'] ?? null,
-                'dilaporkan_oleh' => $request->user()->id,
-                'tanggal_laporan' => now(),
-                'created_at' => now(),
-                'updated_at' => now()
+        $laporan->dokumen = $this->getDokumen($laporan->id);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Detail laporan kegiatan berhasil diambil.',
+            'data' => $laporan
+        ]);
+    }
+
+    public function store(Request $request)
+    {
+        $user = $request->user();
+
+        if ($user->role !== 'pegawai') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya pegawai yang dapat mengisi laporan kegiatan.'
+            ], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'penugasan_id' => ['required', 'integer', 'exists:tb_penugasan,id'],
+            'catatan' => ['required', 'string'],
+            'dokumen' => ['required', 'array', 'min:1'],
+            'dokumen.*.foto' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+            'dokumen.*.latitude' => ['required', 'numeric', 'between:-90,90'],
+            'dokumen.*.longitude' => ['required', 'numeric', 'between:-180,180'],
+        ], [
+            'penugasan_id.required' => 'Penugasan wajib dipilih.',
+            'penugasan_id.exists' => 'Penugasan tidak ditemukan.',
+            'catatan.required' => 'Catatan laporan wajib diisi.',
+            'dokumen.required' => 'Dokumentasi foto wajib diunggah.',
+            'dokumen.min' => 'Minimal unggah satu foto dokumentasi.',
+            'dokumen.*.foto.required' => 'Foto dokumentasi wajib diunggah.',
+            'dokumen.*.foto.image' => 'File harus berupa gambar.',
+            'dokumen.*.foto.mimes' => 'Format gambar harus JPG, JPEG, PNG, atau WEBP.',
+            'dokumen.*.foto.max' => 'Ukuran setiap foto maksimal 5 MB.',
+            'dokumen.*.latitude.required' => 'Latitude wajib diisi.',
+            'dokumen.*.latitude.numeric' => 'Latitude harus berupa angka.',
+            'dokumen.*.latitude.between' => 'Nilai latitude tidak valid.',
+            'dokumen.*.longitude.required' => 'Longitude wajib diisi.',
+            'dokumen.*.longitude.numeric' => 'Longitude harus berupa angka.',
+            'dokumen.*.longitude.between' => 'Nilai longitude tidak valid.',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validasi laporan kegiatan gagal.',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $validated = $validator->validated();
+        $filePaths = [];
+
+        try {
+            $laporanId = DB::transaction(function () use (
+                $request,
+                $user,
+                $validated,
+                &$filePaths
+            ) {
+                $penugasan = DB::table('tb_penugasan')
+                    ->where('id', $validated['penugasan_id'])
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$penugasan) {
+                    throw ValidationException::withMessages([
+                        'penugasan_id' => ['Penugasan tidak ditemukan.']
+                    ]);
+                }
+
+                if ((int) $penugasan->ditugaskan_kepada !== (int) $user->id) {
+                    throw new AuthorizationException(
+                        'Anda tidak berhak mengisi laporan penugasan ini.'
+                    );
+                }
+
+                if ($penugasan->status !== 'proses') {
+                    throw ValidationException::withMessages([
+                        'penugasan_id' => ['Penugasan tidak berada dalam status proses.']
+                    ]);
+                }
+
+                $sudahAda = DB::table('tb_laporan_kegiatan')
+                    ->where('penugasan_id', $penugasan->id)
+                    ->exists();
+
+                if ($sudahAda) {
+                    throw ValidationException::withMessages([
+                        'penugasan_id' => ['Laporan untuk penugasan ini sudah pernah dibuat.']
+                    ]);
+                }
+
+                $kegiatan = DB::table('tb_kegiatan')
+                    ->where('id', $penugasan->kegiatan_id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$kegiatan) {
+                    throw ValidationException::withMessages([
+                        'penugasan_id' => ['Kegiatan dari penugasan ini tidak ditemukan.']
+                    ]);
+                }
+
+                $now = now();
+
+                $laporanId = DB::table('tb_laporan_kegiatan')
+                    ->insertGetId([
+                        'penugasan_id' => $penugasan->id,
+                        'catatan' => $validated['catatan'],
+                        'dilaporkan_oleh' => $user->id,
+                        'tanggal_laporan' => $now,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]);
+
+                $this->simpanDokumen(
+                    $validated['dokumen'],
+                    $laporanId,
+                    $user->id,
+                    $filePaths
+                );
+
+                DB::table('tb_penugasan')
+                    ->where('id', $penugasan->id)
+                    ->update([
+                        'status' => 'selesai',
+                        'updated_at' => $now,
+                    ]);
+
+                $this->perbaruiStatusKegiatan($penugasan->kegiatan_id);
+
+                return $laporanId;
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Laporan kegiatan dan dokumentasi berhasil disimpan.',
+                'data' => $this->getDetailLaporan($laporanId)
+            ], 201);
+
+        } catch (ValidationException $e) {
+            $this->hapusDokumenDrive($filePaths);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Validasi laporan kegiatan gagal.',
+                'errors' => $e->errors()
+            ], 422);
+
+        } catch (AuthorizationException $e) {
+            $this->hapusDokumenDrive($filePaths);
+
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 403);
+
+        } catch (Throwable $e) {
+            $this->hapusDokumenDrive($filePaths);
+
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat menyimpan laporan kegiatan.'
+            ], 500);
+        }
+    }
+
+    public function update(Request $request, $id)
+    {
+        $user = $request->user();
+
+        if ($user->role !== 'pegawai') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya pegawai yang dapat mengedit laporan kegiatan.'
+            ], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'catatan' => ['required', 'string'],
+            'dokumen' => ['sometimes', 'required', 'array', 'min:1'],
+            'dokumen.*.foto' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+            'dokumen.*.latitude' => ['required', 'numeric', 'between:-90,90'],
+            'dokumen.*.longitude' => ['required', 'numeric', 'between:-180,180'],
+        ], [
+            'catatan.required' => 'Catatan laporan wajib diisi.',
+            'dokumen.min' => 'Minimal unggah satu foto dokumentasi.',
+            'dokumen.*.foto.required' => 'Foto dokumentasi wajib diunggah.',
+            'dokumen.*.foto.image' => 'File harus berupa gambar.',
+            'dokumen.*.foto.mimes' => 'Format gambar harus JPG, JPEG, PNG, atau WEBP.',
+            'dokumen.*.foto.max' => 'Ukuran setiap foto maksimal 5 MB.',
+            'dokumen.*.latitude.required' => 'Latitude wajib diisi.',
+            'dokumen.*.latitude.numeric' => 'Latitude harus berupa angka.',
+            'dokumen.*.latitude.between' => 'Nilai latitude tidak valid.',
+            'dokumen.*.longitude.required' => 'Longitude wajib diisi.',
+            'dokumen.*.longitude.numeric' => 'Longitude harus berupa angka.',
+            'dokumen.*.longitude.between' => 'Nilai longitude tidak valid.',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validasi laporan kegiatan gagal.',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $validated = $validator->validated();
+        $filePaths = [];
+        $oldFilePaths = [];
+
+        try {
+            DB::transaction(function () use (
+                $request,
+                $user,
+                $id,
+                $validated,
+                &$filePaths,
+                &$oldFilePaths
+            ) {
+                $laporan = DB::table('tb_laporan_kegiatan')
+                    ->where('id', $id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$laporan) {
+                    throw ValidationException::withMessages([
+                        'laporan' => ['Laporan kegiatan tidak ditemukan.']
+                    ]);
+                }
+
+                $penugasan = DB::table('tb_penugasan')
+                    ->where('id', $laporan->penugasan_id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$penugasan) {
+                    throw ValidationException::withMessages([
+                        'laporan' => ['Penugasan tidak ditemukan.']
+                    ]);
+                }
+
+                if ((int) $penugasan->ditugaskan_kepada !== (int) $user->id) {
+                    throw new AuthorizationException(
+                        'Anda tidak berhak mengedit laporan ini.'
+                    );
+                }
+
+                if ((int) $laporan->dilaporkan_oleh !== (int) $user->id) {
+                    throw new AuthorizationException(
+                        'Anda hanya dapat mengedit laporan yang Anda buat.'
+                    );
+                }
+
+                DB::table('tb_kegiatan')
+                    ->where('id', $penugasan->kegiatan_id)
+                    ->lockForUpdate()
+                    ->first();
+
+                $now = now();
+
+                DB::table('tb_laporan_kegiatan')
+                    ->where('id', $id)
+                    ->update([
+                        'catatan' => $validated['catatan'],
+                        'updated_at' => $now,
+                    ]);
+
+                if (array_key_exists('dokumen', $validated)) {
+                    $dokumenLama = DB::table('tb_dokumen_kegiatan')
+                        ->where('laporan_kegiatan_id', $id)
+                        ->get();
+
+                    foreach ($dokumenLama as $item) {
+                        $oldFilePaths[] = $item->path_file;
+                    }
+
+                    DB::table('tb_dokumen_kegiatan')
+                        ->where('laporan_kegiatan_id', $id)
+                        ->delete();
+
+                    $this->simpanDokumen(
+                        $validated['dokumen'],
+                        $id,
+                        $user->id,
+                        $filePaths
+                    );
+                }
+
+                DB::table('tb_penugasan')
+                    ->where('id', $penugasan->id)
+                    ->update([
+                        'status' => 'selesai',
+                        'updated_at' => $now,
+                    ]);
+
+                $this->perbaruiStatusKegiatan($penugasan->kegiatan_id);
+            });
+
+            // Hapus foto lama setelah transaksi database berhasil
+            if (!empty($oldFilePaths)) {
+                $this->hapusDokumenDrive($oldFilePaths);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Laporan kegiatan berhasil diperbarui.',
+                'data' => $this->getDetailLaporan($id)
             ]);
 
-        // Simpan dokumen lampiran.
-        foreach ($request->file('dokumen', []) as $index => $docData) {
-            $file = $docData['file'];
+        } catch (ValidationException $e) {
+            $this->hapusDokumenDrive($filePaths);
 
-            $jenis = $request->input(
-                "dokumen.$index.jenis_dokumen"
-            );
+            return response()->json([
+                'success' => false,
+                'message' => 'Validasi laporan kegiatan gagal.',
+                'errors' => $e->errors()
+            ], 422);
 
-            $path = $file->store(
-                'dokumen_kegiatan',
-                'public'
-            );
+        } catch (AuthorizationException $e) {
+            $this->hapusDokumenDrive($filePaths);
 
-            if (!$path) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 403);
+
+        } catch (Throwable $e) {
+            $this->hapusDokumenDrive($filePaths);
+
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat memperbarui laporan kegiatan.'
+            ], 500);
+        }
+    }
+
+    public function destroy(Request $request, $id)
+    {
+        $user = $request->user();
+
+        if ($user->role !== 'pegawai') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya pegawai yang dapat menghapus laporan kegiatan.'
+            ], 403);
+        }
+
+        $filePaths = [];
+
+        try {
+            DB::transaction(function () use (
+                $user,
+                $id,
+                &$filePaths
+            ) {
+                $laporan = DB::table('tb_laporan_kegiatan')
+                    ->where('id', $id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$laporan) {
+                    throw ValidationException::withMessages([
+                        'laporan' => ['Laporan kegiatan tidak ditemukan.']
+                    ]);
+                }
+
+                $penugasan = DB::table('tb_penugasan')
+                    ->where('id', $laporan->penugasan_id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$penugasan) {
+                    throw ValidationException::withMessages([
+                        'laporan' => ['Penugasan tidak ditemukan.']
+                    ]);
+                }
+
+                if (
+                    (int) $penugasan->ditugaskan_kepada !== (int) $user->id ||
+                    (int) $laporan->dilaporkan_oleh !== (int) $user->id
+                ) {
+                    throw new AuthorizationException(
+                        'Anda hanya dapat menghapus laporan milik sendiri.'
+                    );
+                }
+
+                DB::table('tb_kegiatan')
+                    ->where('id', $penugasan->kegiatan_id)
+                    ->lockForUpdate()
+                    ->first();
+
+                $dokumen = DB::table('tb_dokumen_kegiatan')
+                    ->where('laporan_kegiatan_id', $id)
+                    ->get();
+
+                foreach ($dokumen as $item) {
+                    $filePaths[] = $item->path_file;
+                }
+
+                DB::table('tb_laporan_kegiatan')
+                    ->where('id', $id)
+                    ->delete();
+
+                DB::table('tb_penugasan')
+                    ->where('id', $penugasan->id)
+                    ->update([
+                        'status' => 'proses',
+                        'updated_at' => now(),
+                    ]);
+
+                DB::table('tb_kegiatan')
+                    ->where('id', $penugasan->kegiatan_id)
+                    ->update([
+                        'status' => 'proses',
+                        'updated_at' => now(),
+                    ]);
+            });
+
+            // Hapus foto Drive setelah transaksi berhasil
+            if (!empty($filePaths)) {
+                $this->hapusDokumenDrive($filePaths);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Laporan kegiatan berhasil dihapus. Status penugasan dan kegiatan kembali menjadi proses.'
+            ]);
+
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Laporan kegiatan tidak ditemukan.',
+                'errors' => $e->errors()
+            ], 404);
+
+        } catch (AuthorizationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 403);
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat menghapus laporan kegiatan.'
+            ], 500);
+        }
+    }
+
+    /**
+     * Menyimpan dokumentasi ke Google Drive.
+     * path_file berisi Google Drive File ID.
+     */
+    private function simpanDokumen(
+        array $dokumen,
+        int $laporanId,
+        int $userId,
+        array &$filePaths
+    ): void {
+        $googleDrive = app(GoogleDriveService::class);
+
+        foreach ($dokumen as $item) {
+            $foto = $item['foto'];
+
+            $fileId = $googleDrive->upload($foto);
+
+            if (!$fileId) {
                 throw new \RuntimeException(
-                    'Gagal menyimpan dokumen lampiran.'
+                    'Gagal menyimpan foto dokumentasi ke Google Drive.'
                 );
             }
 
-            $uploadedPaths[] = $path;
+            // Dicatat untuk cleanup jika transaksi database gagal
+            $filePaths[] = $fileId;
 
             DB::table('tb_dokumen_kegiatan')->insert([
                 'laporan_kegiatan_id' => $laporanId,
-                'diunggah_oleh' => $request->user()->id,
-                'jenis_dokumen' => $jenis,
-                'nama_file' => $file->getClientOriginalName(),
-                'path_file' => $path,
-                'mime_type' => $file->getMimeType(),
-                'ukuran_file' => $file->getSize(),
+                'diunggah_oleh' => $userId,
+                'nama_file' => $foto->getClientOriginalName(),
+                'path_file' => $fileId,
+                'mime_type' => $foto->getMimeType(),
+                'ukuran_file' => $foto->getSize(),
+                'latitude' => $item['latitude'],
+                'longitude' => $item['longitude'],
                 'created_at' => now(),
-                'updated_at' => now()
+                'updated_at' => now(),
             ]);
         }
+    }
 
-        // Ubah status penugasan menjadi selesai.
-        DB::table('tb_penugasan')
-            ->where('id', $validated['penugasan_id'])
-            ->update([
-                'status' => 'selesai',
-                'updated_at' => now()
-            ]);
-
-        /*
-         * Ubah status surat masuk menjadi selesai.
-         *
-         * Asumsi: tb_penugasan memiliki kolom surat_masuk_id
-         * yang merujuk ke tb_surat_masuk.id.
-         */
-        if (
-            isset($penugasan->surat_masuk_id) &&
-            $penugasan->surat_masuk_id !== null
-        ) {
-            DB::table('tb_surat_masuk')
-                ->where('id', $penugasan->surat_masuk_id)
-                ->update([
-                    'status' => 'selesai',
-                    'updated_at' => now()
-                ]);
+    /**
+     * Menghapus file dari Google Drive.
+     */
+    private function hapusDokumenDrive(array $fileIds): void
+    {
+        if (empty($fileIds)) {
+            return;
         }
 
-        DB::commit();
+        try {
+            $googleDrive = app(GoogleDriveService::class);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Laporan berhasil disubmit. Status penugasan dan surat masuk telah diperbarui.',
-            'data' => [
-                'laporan_id' => $laporanId,
-                'penugasan_id' => $validated['penugasan_id'],
-                'status_penugasan' => 'selesai',
-                'status_surat_masuk' => isset($penugasan->surat_masuk_id)
-                    && $penugasan->surat_masuk_id !== null
-                        ? 'selesai'
-                        : null
-            ]
-        ], 201);
+            foreach (array_unique($fileIds) as $fileId) {
+                if (empty($fileId)) {
+                    continue;
+                }
 
-    } catch (\Throwable $e) {
-        DB::rollBack();
-
-        // Hapus file yang sudah tersimpan jika transaksi gagal.
-        foreach ($uploadedPaths as $path) {
-            try {
-                Storage::disk('public')->delete($path);
-            } catch (\Throwable $fileException) {
-                report($fileException);
+                try {
+                    $googleDrive->delete($fileId);
+                } catch (Throwable $e) {
+                    // Jangan membatalkan proses database karena gagal hapus Drive
+                    report($e);
+                }
             }
+        } catch (Throwable $e) {
+            report($e);
         }
-
-        report($e);
-
-        return response()->json([
-            'success' => false,
-            'message' => 'Terjadi kesalahan saat menyimpan laporan kegiatan.'
-        ], 500);
-    }
-}
-
-public function update(Request $request, string $id)
-{
-    $laporan = DB::table('tb_laporan_kegiatan')
-        ->where('id', $id)
-        ->first();
-
-    if (!$laporan) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Data laporan tidak ditemukan.'
-        ], 404);
     }
 
-    $validated = $request->validate([
-        'penugasan_id' => [
-            'required',
-            'exists:tb_penugasan,id'
-        ],
-        'ringkasan' => 'required|string',
-        'hasil_kegiatan' => 'required|string',
-        'catatan' => 'nullable|string',
+    /**
+     * Preview gambar melalui Laravel.
+     * File Google Drive tetap privat.
+     */
+    public function previewDokumen(Request $request, $id)
+    {
+        $user = $request->user();
 
-        // File baru bersifat opsional saat edit.
-        'dokumen' => 'sometimes|array',
-        'dokumen.*.file' => [
-            'required',
-            'file',
-            'mimes:jpeg,png,jpg,pdf,doc,docx',
-            'max:5120'
-        ],
-        'dokumen.*.jenis_dokumen' => [
-            'required',
-            Rule::in([
-                'materi',
-                'dokumentasi',
-                'notulen',
-                'lainnya'
-            ])
-        ],
+        $query = DB::table('tb_dokumen_kegiatan as d')
+            ->join(
+                'tb_laporan_kegiatan as l',
+                'l.id',
+                '=',
+                'd.laporan_kegiatan_id'
+            )
+            ->join(
+                'tb_penugasan as p',
+                'p.id',
+                '=',
+                'l.penugasan_id'
+            )
+            ->join(
+                'tb_kegiatan as k',
+                'k.id',
+                '=',
+                'p.kegiatan_id'
+            )
+            ->where('d.id', $id)
+            ->select(
+                'd.id',
+                'd.nama_file',
+                'd.path_file',
+                'd.mime_type'
+            );
 
-        // ID dokumen lama yang ingin dihapus atau diganti.
-        'dokumen_hapus' => 'sometimes|array',
-        'dokumen_hapus.*' => [
-            'required',
-            'integer',
-            'distinct'
-        ]
-    ]);
+        $this->terapkanHakAkses($query, $user);
 
-    $idLaporan = (int) $id;
-    $idDokumenHapus = array_map(
-        'intval',
-        $validated['dokumen_hapus'] ?? []
-    );
+        $dokumen = $query->first();
 
-    $dokumenFiles = $request->file('dokumen', []);
-
-    $pathsFileBaru = [];
-    $pathsFileLama = [];
-
-    DB::beginTransaction();
-
-    try {
-        // Kunci laporan untuk menghindari perubahan bersamaan.
-        $laporanTerkunci = DB::table('tb_laporan_kegiatan')
-            ->where('id', $idLaporan)
-            ->lockForUpdate()
-            ->first();
-
-        if (!$laporanTerkunci) {
-            DB::rollBack();
-
+        if (!$dokumen) {
             return response()->json([
                 'success' => false,
-                'message' => 'Data laporan tidak ditemukan.'
+                'message' => 'Dokumen tidak ditemukan.'
             ], 404);
         }
 
-        // Ambil dan kunci dokumen milik laporan ini.
-        $dokumenLama = DB::table('tb_dokumen_kegiatan')
-            ->where('laporan_kegiatan_id', $idLaporan)
-            ->lockForUpdate()
-            ->get();
+        try {
+            $googleDrive = app(GoogleDriveService::class);
 
-        $dokumenHapus = $dokumenLama->whereIn(
-            'id',
-            $idDokumenHapus
-        );
+            $file = $googleDrive->download($dokumen->path_file);
 
-        // Pastikan semua ID yang diminta benar-benar milik laporan ini.
-        if ($dokumenHapus->count() !== count($idDokumenHapus)) {
-            DB::rollBack();
+            $namaFile = str_replace(
+                ["\r", "\n", '"'],
+                '',
+                $dokumen->nama_file
+            );
+
+            return response()->stream(
+                function () use ($file) {
+                    echo $file->getBody()->getContents();
+                },
+                200,
+                [
+                    'Content-Type' => $dokumen->mime_type
+                        ?: 'application/octet-stream',
+                    'Content-Disposition' => 'inline; filename="' .
+                        $namaFile . '"',
+                    'Cache-Control' => 'private, no-store',
+                ]
+            );
+
+        } catch (Throwable $e) {
+            report($e);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Ada dokumen yang tidak ditemukan atau bukan milik laporan ini.'
-            ], 422);
+                'message' => 'Gagal mengambil gambar dari Google Drive.'
+            ], 500);
         }
-
-        $jumlahDokumenAkhir =
-            $dokumenLama->count()
-            - $dokumenHapus->count()
-            + count($dokumenFiles);
-
-        if ($jumlahDokumenAkhir > 5) {
-            DB::rollBack();
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Maksimal 5 dokumen untuk setiap laporan. Hapus dokumen lama atau kurangi dokumen baru.'
-            ], 422);
-        }
-
-        // Perbarui isi laporan.
-        DB::table('tb_laporan_kegiatan')
-            ->where('id', $idLaporan)
-            ->update([
-                'penugasan_id' => $validated['penugasan_id'],
-                'ringkasan' => $validated['ringkasan'],
-                'hasil_kegiatan' => $validated['hasil_kegiatan'],
-                'catatan' => $validated['catatan'] ?? null,
-                'updated_at' => now()
-            ]);
-
-        // Hapus data dokumen yang dipilih untuk dihapus/diganti.
-        if ($idDokumenHapus !== []) {
-            $pathsFileLama = $dokumenHapus
-                ->pluck('path_file')
-                ->filter()
-                ->values()
-                ->all();
-
-            DB::table('tb_dokumen_kegiatan')
-                ->where('laporan_kegiatan_id', $idLaporan)
-                ->whereIn('id', $idDokumenHapus)
-                ->delete();
-        }
-
-        // Simpan dokumen baru.
-        foreach ($dokumenFiles as $index => $docData) {
-            $file = $docData['file'] ?? null;
-
-            if (!$file) {
-                throw new \RuntimeException(
-                    'File dokumen baru tidak ditemukan.'
-                );
-            }
-
-            $jenis = $request->input(
-                "dokumen.$index.jenis_dokumen"
-            );
-
-            $path = $file->store(
-                'dokumen_kegiatan',
-                'public'
-            );
-
-            if (!$path) {
-                throw new \RuntimeException(
-                    'Gagal menyimpan file dokumen.'
-                );
-            }
-
-            $pathsFileBaru[] = $path;
-
-            DB::table('tb_dokumen_kegiatan')->insert([
-                'laporan_kegiatan_id' => $idLaporan,
-                'diunggah_oleh' => $request->user()->id,
-                'jenis_dokumen' => $jenis,
-                'nama_file' => $file->getClientOriginalName(),
-                'path_file' => $path,
-                'mime_type' => $file->getMimeType(),
-                'ukuran_file' => $file->getSize(),
-                'created_at' => now(),
-                'updated_at' => now()
-            ]);
-        }
-
-        DB::commit();
-
-        // Hapus file lama hanya setelah perubahan database berhasil.
-        foreach ($pathsFileLama as $path) {
-            try {
-                Storage::disk('public')->delete($path);
-            } catch (\Throwable $e) {
-                report($e);
-            }
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Laporan dan dokumen berhasil diperbarui.'
-        ]);
-
-    } catch (\Throwable $e) {
-        DB::rollBack();
-
-        // Bersihkan file baru jika proses database gagal.
-        foreach ($pathsFileBaru as $path) {
-            try {
-                Storage::disk('public')->delete($path);
-            } catch (\Throwable $fileException) {
-                report($fileException);
-            }
-        }
-
-        report($e);
-
-        return response()->json([
-            'success' => false,
-            'message' => 'Gagal memperbarui laporan kegiatan.'
-        ], 500);
     }
-}
-    
-public function destroy(string $id)
-{
-    $paths = [];
 
-    DB::beginTransaction();
-
-    try {
-        // 1. Cari laporan dan kunci data selama transaksi.
-        $laporan = DB::table('tb_laporan_kegiatan')
-            ->where('id', $id)
-            ->lockForUpdate()
-            ->first();
-
-        if (!$laporan) {
-            DB::rollBack();
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Data laporan tidak ditemukan.'
-            ], 404);
-        }
-
-        $idPenugasan = $laporan->penugasan_id;
-
-        // 2. Ambil penugasan untuk mengetahui surat masuk terkait.
-        $penugasan = DB::table('tb_penugasan')
-            ->where('id', $idPenugasan)
-            ->lockForUpdate()
-            ->first();
-
-        // 3. Ambil path seluruh dokumen yang dilampirkan.
-        $dokumen = DB::table('tb_dokumen_kegiatan')
-            ->where('laporan_kegiatan_id', $id)
-            ->get();
-
-        $paths = $dokumen
-            ->pluck('path_file')
-            ->filter()
-            ->values()
-            ->all();
-
-        // 4. Hapus data dokumen dari database.
-        DB::table('tb_dokumen_kegiatan')
-            ->where('laporan_kegiatan_id', $id)
-            ->delete();
-
-        // 5. Hapus laporan dari database.
-        DB::table('tb_laporan_kegiatan')
-            ->where('id', $id)
-            ->delete();
-
-        // 6. Periksa apakah masih ada laporan untuk penugasan ini.
-        $masihAdaLaporan = DB::table('tb_laporan_kegiatan')
-            ->where('penugasan_id', $idPenugasan)
+    private function perbaruiStatusKegiatan(int $kegiatanId): void
+    {
+        $masihAdaPenugasan = DB::table('tb_penugasan')
+            ->where('kegiatan_id', $kegiatanId)
+            ->where('status', '!=', 'selesai')
             ->exists();
 
-        // 7. Jika tidak ada laporan tersisa, kembalikan status penugasan.
-        if (!$masihAdaLaporan) {
-            DB::table('tb_penugasan')
-                ->where('id', $idPenugasan)
-                ->where('status', 'selesai')
-                ->update([
-                    'status' => 'diterima',
-                    'updated_at' => now()
-                ]);
-        }
-
-        // 8. Perbarui status surat masuk jika penugasan memiliki surat terkait.
-        $statusSuratMasuk = null;
-
-        if (
-            $penugasan &&
-            !empty($penugasan->surat_masuk_id)
-        ) {
-            // Periksa apakah masih ada penugasan yang belum selesai.
-            $adaPenugasanBelumSelesai = DB::table('tb_penugasan')
-                ->where('surat_masuk_id', $penugasan->surat_masuk_id)
-                ->where('status', '!=', 'selesai')
-                ->exists();
-
-            if ($adaPenugasanBelumSelesai) {
-                // Setidaknya satu penugasan belum selesai.
-                DB::table('tb_surat_masuk')
-                    ->where('id', $penugasan->surat_masuk_id)
-                    ->where('status', 'selesai')
-                    ->update([
-                        'status' => 'diproses',
-                        'updated_at' => now()
-                    ]);
-
-                $statusSuratMasuk = 'diproses';
-            } else {
-                // Seluruh penugasan masih berstatus selesai.
-                $statusSuratMasuk = 'selesai';
-            }
-        }
-
-        // 9. Simpan seluruh perubahan database.
-        DB::commit();
-
-        // 10. Hapus file fisik setelah transaksi berhasil.
-        foreach ($paths as $path) {
-            try {
-                Storage::disk('public')->delete($path);
-            } catch (\Throwable $e) {
-                report($e);
-            }
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Laporan kegiatan berhasil dihapus.',
-            'status_penugasan' => $masihAdaLaporan
-                ? 'tetap'
-                : 'diterima',
-            'status_surat_masuk' => $statusSuratMasuk
-        ]);
-
-    } catch (\Throwable $e) {
-        DB::rollBack();
-
-        // Catat kesalahan untuk pemeriksaan log server.
-        report($e);
-
-        return response()->json([
-            'success' => false,
-            'message' => 'Gagal menghapus laporan kegiatan.'
-        ], 500);
+        DB::table('tb_kegiatan')
+            ->where('id', $kegiatanId)
+            ->update([
+                'status' => $masihAdaPenugasan ? 'proses' : 'selesai',
+                'updated_at' => now(),
+            ]);
     }
-}
+
+    /**
+     * Mengambil metadata dokumen beserta URL preview.
+     * Google Drive File ID tidak dikirim ke aplikasi Android.
+     */
+    private function getDokumen(int $laporanId)
+    {
+        return DB::table('tb_dokumen_kegiatan')
+            ->where('laporan_kegiatan_id', $laporanId)
+            ->select(
+                'id',
+                'laporan_kegiatan_id',
+                'diunggah_oleh',
+                'nama_file',
+                'mime_type',
+                'ukuran_file',
+                'latitude',
+                'longitude',
+                'created_at'
+            )
+            ->orderBy('id')
+            ->get()
+            ->map(function ($item) {
+                $item->preview_url = request()->getSchemeAndHttpHost()
+    . '/api/laporan-kegiatan/dokumen/' . $item->id . '/preview';
+
+                return $item;
+            });
+    }
+
+    private function getDetailLaporan(int $id)
+    {
+        $laporan = DB::table('tb_laporan_kegiatan as l')
+            ->join('tb_penugasan as p', 'p.id', '=', 'l.penugasan_id')
+            ->join('tb_kegiatan as k', 'k.id', '=', 'p.kegiatan_id')
+            ->join('users as u', 'u.id', '=', 'l.dilaporkan_oleh')
+            ->where('l.id', $id)
+            ->select(
+                'l.*',
+                'p.ditugaskan_kepada',
+                'p.ditugaskan_oleh',
+                'p.status as status_penugasan',
+                'k.id as kegiatan_id',
+                'k.nama_kegiatan',
+                'k.uraian_kegiatan',
+                'k.lokasi',
+                'k.tanggal_mulai',
+                'k.tanggal_selesai',
+                'k.volume_jam',
+                'k.status as status_kegiatan',
+                'u.name as nama_pelapor'
+            )
+            ->first();
+
+        if ($laporan) {
+            $laporan->dokumen = $this->getDokumen($id);
+        }
+
+        return $laporan;
+    }
+
+    private function terapkanHakAkses($query, $user): void
+    {
+        if ($user->role === 'pegawai') {
+            $query->where('p.ditugaskan_kepada', $user->id);
+
+        } elseif ($user->role === 'ketua_tim') {
+            $query->whereExists(function ($subquery) use ($user) {
+                $subquery->select(DB::raw(1))
+                    ->from('tb_tim as t')
+                    ->whereColumn('t.id', 'k.tim_id')
+                    ->where('t.ketua_id', $user->id);
+            });
+
+        } elseif (!in_array($user->role, [
+            'super_admin',
+            'pimpinan',
+            'operator'
+        ])) {
+            abort(403, 'Anda tidak memiliki akses untuk melihat laporan kegiatan.');
+        }
+    }
 }

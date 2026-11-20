@@ -1,3 +1,4 @@
+
 <?php
 
 use Illuminate\Database\Migrations\Migration;
@@ -11,37 +12,40 @@ return new class extends Migration
         Schema::create('tb_penugasan', function (Blueprint $table) {
             $table->id();
 
-            $table->foreignId('surat_masuk_id')
-                ->constrained('tb_surat_masuk')
+            // Kegiatan yang ditugaskan
+            $table->foreignId('kegiatan_id')
+                ->constrained('tb_kegiatan')
                 ->restrictOnDelete();
 
+            // Pengguna yang memberikan penugasan
             $table->foreignId('ditugaskan_oleh')
                 ->constrained('users')
                 ->restrictOnDelete();
 
+            // Pegawai yang menerima penugasan
             $table->foreignId('ditugaskan_kepada')
                 ->constrained('users')
                 ->restrictOnDelete();
 
+            // Status penugasan
             $table->enum('status', [
-                'menunggu_respon',
-                'diterima',
-                'ditolak',
+                'ditugaskan',
                 'direkomendasikan',
+                'proses',
                 'selesai',
                 'dibatalkan'
-            ])->default('menunggu_respon');
+            ])->default('ditugaskan');
 
+            // Catatan dari pemberi tugas
             $table->text('catatan_penugasan')->nullable();
 
+            // Waktu penugasan dibuat
             $table->timestamp('waktu_penugasan')->nullable();
-            $table->timestamp('waktu_respon')->nullable();
-
-            $table->text('catatan_respon')->nullable();
 
             $table->timestamps();
 
-            $table->index('surat_masuk_id');
+            // Index
+            $table->index('kegiatan_id');
             $table->index('ditugaskan_kepada');
             $table->index('status');
         });

@@ -12,22 +12,19 @@ return new class extends Migration
             $table->id();
 
             $table->foreignId('penugasan_id')
+                ->unique()
                 ->constrained('tb_penugasan')
                 ->restrictOnDelete();
 
-            $table->text('ringkasan')->nullable();
-            $table->text('hasil_kegiatan')->nullable();
-            $table->text('catatan')->nullable();
+            $table->text('catatan');
 
             $table->foreignId('dilaporkan_oleh')
                 ->constrained('users')
                 ->restrictOnDelete();
 
-            $table->timestamp('tanggal_laporan')->nullable();
+            $table->timestamp('tanggal_laporan')->useCurrent();
 
             $table->timestamps();
-
-            $table->index('penugasan_id');
         });
     }
 

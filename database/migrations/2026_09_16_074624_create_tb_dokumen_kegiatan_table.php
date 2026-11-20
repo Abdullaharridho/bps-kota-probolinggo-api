@@ -1,3 +1,4 @@
+
 <?php
 
 use Illuminate\Database\Migrations\Migration;
@@ -11,30 +12,27 @@ return new class extends Migration
         Schema::create('tb_dokumen_kegiatan', function (Blueprint $table) {
             $table->id();
 
+            // Relasi ke laporan kegiatan
             $table->foreignId('laporan_kegiatan_id')
                 ->constrained('tb_laporan_kegiatan')
                 ->cascadeOnDelete();
 
+            // Pengunggah foto
             $table->foreignId('diunggah_oleh')
                 ->constrained('users')
                 ->restrictOnDelete();
 
-            $table->enum('jenis_dokumen', [
-                'materi',
-                'dokumentasi',
-                'notulen',
-                'lainnya'
-            ]);
-
+            // Informasi foto
             $table->string('nama_file');
             $table->string('path_file');
-
             $table->string('mime_type')->nullable();
             $table->unsignedBigInteger('ukuran_file')->nullable();
 
-            $table->timestamps();
+            // Lokasi pengambilan dokumentasi
+            $table->decimal('latitude', 10, 7);
+            $table->decimal('longitude', 10, 7);
 
-            $table->index('laporan_kegiatan_id');
+            $table->timestamps();
         });
     }
 
