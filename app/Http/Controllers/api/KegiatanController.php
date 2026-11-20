@@ -6,11 +6,22 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\Validator as ValidatorInstance;
 use Throwable;
 
 class KegiatanController extends Controller
 {
+    /**
+     * Pilihan status dinas kegiatan.
+     * dalam_dinas = Dalam Dinas, luar_dinas = Luar Dinas, non_dinas = Non Dinas.
+     */
+    private const STATUS_DINAS = [
+        'dalam_dinas',
+        'luar_dinas',
+        'non_dinas'
+    ];
+
     /**
      * ======================================================
      * DAFTAR KEGIATAN
@@ -23,6 +34,7 @@ class KegiatanController extends Controller
      * Filter:
      * - search : nama, uraian, dan lokasi kegiatan.
      * - status : baru, proses, selesai.
+     * - status_dinas : dalam_dinas, luar_dinas, non_dinas.
      */
     public function index(Request $request)
     {
@@ -49,6 +61,7 @@ class KegiatanController extends Controller
                     'jam_mulai',
                     'jam_selesai',
                     'status',
+                    'status_dinas',
                     'created_at',
                     'updated_at'
                 );
@@ -82,6 +95,11 @@ class KegiatanController extends Controller
             // Filter status.
             if ($request->filled('status')) {
                 $query->where('status', $request->status);
+            }
+
+            // Filter status dinas.
+            if ($request->filled('status_dinas')) {
+                $query->where('status_dinas', $request->status_dinas);
             }
 
             $data = $query
@@ -244,6 +262,7 @@ class KegiatanController extends Controller
                 'volume_jam' => $validated['volume_jam'],
                 'jam_mulai' => $validated['jam_mulai'] ?? null,
                 'jam_selesai' => $validated['jam_selesai'] ?? null,
+                'status_dinas' => $validated['status_dinas'],
 
                 'status' => 'baru',
 
@@ -358,6 +377,11 @@ class KegiatanController extends Controller
                 'jam_selesai' => $validated['jam_selesai'] ?? null,
                 'updated_at' => now()
             ];
+
+            // Status dinas hanya diubah jika dikirim.
+            if (array_key_exists('status_dinas', $validated)) {
+                $updateData['status_dinas'] = $validated['status_dinas'];
+            }
 
             // Tim hanya dapat diganti oleh operator.
             if ($user->role === 'operator' && array_key_exists('tim_id', $validated)) {
@@ -556,6 +580,17 @@ class KegiatanController extends Controller
                     'after_or_equal:tanggal_mulai'
                 ],
 
+                'status_dinas' => $isUpdate
+                    ? [
+                        'sometimes',
+                        'required',
+                        Rule::in(self::STATUS_DINAS)
+                    ]
+                    : [
+                        'required',
+                        Rule::in(self::STATUS_DINAS)
+                    ],
+
                 'volume_jam' => [
                     'required',
                     'numeric',
@@ -594,6 +629,9 @@ class KegiatanController extends Controller
                 'tanggal_selesai.required' => 'Tanggal selesai wajib diisi.',
                 'tanggal_selesai.date' => 'Tanggal selesai tidak valid.',
                 'tanggal_selesai.after_or_equal' => 'Tanggal selesai tidak boleh sebelum tanggal mulai.',
+
+                'status_dinas.required' => 'Status dinas wajib dipilih.',
+                'status_dinas.in' => 'Status dinas harus dalam_dinas, luar_dinas, atau non_dinas.',
 
                 'volume_jam.required' => 'Volume jam wajib diisi.',
                 'volume_jam.numeric' => 'Volume jam harus berupa angka.',
